@@ -69,22 +69,26 @@ def setup_schema(db: GraphDB):
 
 def import_chunks(db: GraphDB, records: list[dict]):
     batch = [{
-        "chunk_id":      r["chunk_id"],
-        "source":        r["source"],
-        "title":         r["title"],
-        "text":          r["text"][:500],
-        "dynasty_period": r.get("dynasty_period", "unknown"),  
+        "chunk_id":       r["chunk_id"],
+        "source":         r["source"],
+        "title":          r["title"],
+        "text":           r["text"][:500],
+        "dynasty_period": r.get("dynasty_period", "unknown"),
     } for r in records]
 
-    db.run_batch("""
-        UNWIND $batch AS row
-        MERGE (c:Chunk {chunk_id: row.chunk_id})
-        SET c.source         = row.source,
-            c.title          = row.title,
-            c.text           = row.text,
-            c.dynasty_period = row.dynasty_period
-    """, batch)
-    print(f"   Chunks : {len(batch)}")
+    # Split into smaller batches of 100
+    batch_size = 100
+    for i in range(0, len(batch), batch_size):
+        sub_batch = batch[i:i + batch_size]
+        db.run_batch("""
+            UNWIND $batch AS row
+            MERGE (c:Chunk {chunk_id: row.chunk_id})
+            SET c.source         = row.source,
+                c.title          = row.title,
+                c.text           = row.text,
+                c.dynasty_period = row.dynasty_period
+        """, sub_batch)
+        print(f"   Chunks: {min(i + batch_size, len(batch))}/{len(batch)}")
 
 
 def import_entities(db: GraphDB, records: list[dict]):
@@ -304,7 +308,7 @@ def verify(db: GraphDB):
     rows = db.run("""
         MATCH (p:Person)-[r:MENTIONED_IN]->()
         RETURN p.name AS name, count(r) AS mentions
-        ORDER BY mentions DESC LIMIT 5
+        ORDER BY mentions DESC LIMIT 10
     """)
     for row in rows:
         print(f"   {row['name']} ({row['mentions']} lần)")

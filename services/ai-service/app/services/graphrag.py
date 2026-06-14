@@ -73,15 +73,14 @@ def chunks_loaded() -> int:
 
 # ── Query helpers ──────────────────────────────────────────────────────────────
 
-def query_graph(question: str, top_k: int = 5) -> dict:
+def query_graph(question: str, top_k: int = 10) -> dict:
     """GraphRAG query: vector search → graph expansion → LLM generation."""
-    from graphrag_retriever import build_context  # type: ignore[import]
+    from graphrag_retriever import build_context, extract_entity  # type: ignore[import]
 
     if not _ready:
         raise RuntimeError("GraphRAG not initialised")
 
     # Strip context prefix [dynasty_name] nếu có
-    # Ví dụ: "[nhà Triệu] Triệu Đà là ai?" → dynasty_context="nhà Triệu", clean_question="Triệu Đà là ai?"
     dynasty_context: Optional[str] = None
     clean_question = question
     if question.startswith("[") and "]" in question:
@@ -90,8 +89,50 @@ def query_graph(question: str, top_k: int = 5) -> dict:
         clean_question = question[end + 1:].strip()
         logger.info("Dynasty context: '%s' | Clean question: '%s'", dynasty_context, clean_question)
 
-    # Dùng clean_question cho vector search để tránh embedding bị lệch
+    # Entity lookup for definition-style queries ("là ai", "là gì", bare noun phrases)
+    entity_info = None
+    entity = extract_entity(clean_question)
+    if entity and _neo4j_ok and _graph_expander is not None:
+        try:
+            entity_info = _graph_expander.lookup_entity(entity)
+            if entity_info:
+                logger.info(
+                    "Entity node found: %s [%s] — %d title-matched chunks",
+                    entity_info.get("name"),
+                    entity_info.get("type"),
+                    len(entity_info.get("context_chunks") or []),
+                )
+            else:
+                logger.info("No entity node found for: '%s'", entity)
+        except Exception as exc:
+            logger.warning("Entity lookup failed: %s", exc)
+
+    # Fallback: when clean_question yields no entity, try the dynasty_context
+    # (handles edge cases where the prefix IS the entity, e.g. [Hùng Vương] <empty>)
+    if entity_info is None and dynasty_context and _neo4j_ok and _graph_expander is not None:
+        try:
+            entity_info = _graph_expander.lookup_entity(dynasty_context)
+            if entity_info:
+                logger.info(
+                    "Dynasty-context entity found: %s [%s]",
+                    entity_info.get("name"),
+                    entity_info.get("type"),
+                )
+        except Exception as exc:
+            logger.warning("Dynasty context entity lookup failed: %s", exc)
+
     chunks = _embed_store.search(clean_question, top_k=top_k)
+
+    logger.info("Retrieved %d chunks", len(chunks))
+    for i, c in enumerate(chunks, 1):
+        logger.info(
+            "[%d] score=%.3f | %s",
+            i,
+            c.get("score", 0),
+            c.get("title", "NO_TITLE"),
+        )
+        logger.info("TEXT: %s", c.get("text", "")[:200].replace("\n", " "))
+
     chunk_ids = [c.get("chunk_id", c.get("id", "")) for c in chunks]
 
     graph_data: dict = {}
@@ -101,7 +142,10 @@ def query_graph(question: str, top_k: int = 5) -> dict:
         except Exception as exc:
             logger.warning("Graph expansion failed: %s", exc)
 
-    context_str = build_context(clean_question, chunks, graph_data)
+    context_str = build_context(clean_question, chunks, graph_data, entity_info=entity_info)
+    print("\n===== FULL CONTEXT =====\n")
+    print(context_str[:5000])
+    print("\n========================\n")
 
     # Thêm dynasty context vào đầu prompt nếu có
     if dynasty_context:
@@ -124,7 +168,7 @@ def query_graph(question: str, top_k: int = 5) -> dict:
     }
 
 
-def query_naive(question: str, top_k: int = 5) -> dict:
+def query_naive(question: str, top_k: int = 10) -> dict:
     """Naive (vector-only) RAG query."""
     from evaluator import NaiveRAG  # type: ignore[import]
 

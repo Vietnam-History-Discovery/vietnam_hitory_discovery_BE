@@ -7,6 +7,8 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 public class ChatServiceApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(ChatServiceApplication.class, args);
+        SpringApplication app = new SpringApplication(ChatServiceApplication.class);
+        app.addInitializers(new DotenvInitializer());
+        app.run(args);
     }
 }

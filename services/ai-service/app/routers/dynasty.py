@@ -29,12 +29,24 @@ _driver = None
 def _get_driver():
     global _driver
     if _driver is None:
-        from neo4j import GraphDatabase  # type: ignore[import]
-
+        from neo4j import GraphDatabase
+        from dotenv import load_dotenv
+        import pathlib
+        
+        # Load .env from project root
+        load_dotenv(pathlib.Path(__file__).parents[4] / ".env", override=True)
+        env_path = pathlib.Path(__file__).parents[4] / ".env"
+        logger.info(f"Loading .env from: {env_path}")
+        load_dotenv(env_path, override=True)
+        logger.info(f"NEO4J_USER={os.environ.get('NEO4J_USER')}")
+        logger.info(f"NEO4J_URI={os.environ.get('NEO4J_URI')}")
+        
         uri = os.environ["NEO4J_URI"]
         auth = (os.environ["NEO4J_USER"], os.environ["NEO4J_PASSWORD"])
         _driver = GraphDatabase.driver(uri, auth=auth)
         logger.info("Dynasty Neo4j driver initialised")
+        
+        
     return _driver
 
 
@@ -64,13 +76,35 @@ async def list_dynasties() -> DynastyListResponse:
     try:
         rows = await asyncio.to_thread(
             _run,
-            "MATCH (d:Dynasty) RETURN d.name AS name, COALESCE(d.mentions, 0) AS mentions "
-            "ORDER BY mentions DESC",
+            """MATCH (d:Dynasty) 
+            RETURN d.name AS name, 
+                    COALESCE(d.mentions, 0) AS mentions,
+                    d.period AS period,
+                    d.era AS era,
+                    d.capital AS capital,
+                    d.description AS description,
+                    d.key_figures AS key_figures,
+                    d.key_events AS key_events,
+                    d.start_year AS start_year
+            ORDER BY d.start_year""",
         )
     except Exception as exc:
         raise HTTPException(503, f"Neo4j query failed: {exc}") from exc
 
-    dynasties = [DynastyListItem(name=r["name"], mentions=r["mentions"]) for r in rows]
+    dynasties = [
+        DynastyListItem(
+            name        = r["name"],
+            mentions    = r["mentions"],
+            period      = r.get("period"),
+            era         = r.get("era"),
+            capital     = r.get("capital"),
+            description = r.get("description"),
+            key_figures = r.get("key_figures") or [],
+            key_events  = r.get("key_events")  or [],
+            start_year  = r.get("start_year"),
+        )
+        for r in rows
+    ]
     return DynastyListResponse(total=len(dynasties), dynasties=dynasties)
 
 
@@ -95,20 +129,20 @@ async def get_dynasty(name: str) -> DynastyDetail:
             asyncio.to_thread(
                 _run,
                 "MATCH (e:Event)-[:CO_OCCURS_WITH]-(d:Dynasty {name: $name}) "
-                "RETURN e.name AS name LIMIT 5",
+                "RETURN e.name AS name LIMIT 10",
                 name=name,
             ),
             asyncio.to_thread(
                 _run,
                 "MATCH (pl:Place)-[:CO_OCCURS_WITH]-(d:Dynasty {name: $name}) "
-                "RETURN pl.name AS name LIMIT 5",
+                "RETURN pl.name AS name LIMIT 10",
                 name=name,
             ),
             asyncio.to_thread(
                 _run,
                 "MATCH (c:Chunk)-[:BELONGS_TO_DYNASTY]->(d:Dynasty {name: $name}) "
                 "RETURN c.title AS title, c.text AS text "
-                "ORDER BY c.chunk_id LIMIT 5",
+                "ORDER BY c.chunk_id LIMIT 10",
                 name=name,
             ),
         )

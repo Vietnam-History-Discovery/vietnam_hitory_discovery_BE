@@ -1,11 +1,11 @@
 package com.vietnamhistory.chatservice.service;
 
-import com.vietnamhistory.chatservice.dto.*;
-import com.vietnamhistory.chatservice.entity.ChatMessage;
-import com.vietnamhistory.chatservice.entity.ChatSession;
-import com.vietnamhistory.chatservice.entity.MessageRole;
-import com.vietnamhistory.chatservice.repository.ChatMessageRepository;
-import com.vietnamhistory.chatservice.repository.ChatSessionRepository;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+import java.util.stream.Collectors;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -14,17 +14,25 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
-import java.time.Duration;
-import java.time.LocalDateTime;
-import java.util.List;
-import java.util.UUID;
-import java.util.stream.Collectors;
+import com.vietnamhistory.chatservice.dto.AiQueryRequest;
+import com.vietnamhistory.chatservice.dto.AiQueryResponse;
+import com.vietnamhistory.chatservice.dto.AskRequest;
+import com.vietnamhistory.chatservice.dto.AskResponse;
+import com.vietnamhistory.chatservice.dto.CreateSessionRequest;
+import com.vietnamhistory.chatservice.dto.MessageDto;
+import com.vietnamhistory.chatservice.dto.SessionDto;
+import com.vietnamhistory.chatservice.dto.SessionWithMessagesDto;
+import com.vietnamhistory.chatservice.entity.ChatMessage;
+import com.vietnamhistory.chatservice.entity.ChatSession;
+import com.vietnamhistory.chatservice.entity.MessageRole;
+import com.vietnamhistory.chatservice.repository.ChatMessageRepository;
+import com.vietnamhistory.chatservice.repository.ChatSessionRepository;
 
 @Service
 public class ChatService {
 
     private static final Logger log = LoggerFactory.getLogger(ChatService.class);
-    private static final int AI_TOP_K = 5;
+    private static final int AI_TOP_K = 10;
     private static final Duration AI_TIMEOUT = Duration.ofSeconds(30);
 
     @Autowired

@@ -470,7 +470,7 @@ def run_evaluation(sample_size: int = 25):
             time.sleep(1.5)  # rate limit
 
             # ── GraphRAG ─────────────────────────────────────────────────────
-            graph_chunks = embed_store.search(qa["question"], top_k=5)
+            graph_chunks = embed_store.search(qa["question"], top_k=10)
             chunk_ids    = [c["chunk_id"] for c in graph_chunks]
             graph_data   = expander.expand(chunk_ids)
             graph_context = build_context(qa["question"], graph_chunks, graph_data)

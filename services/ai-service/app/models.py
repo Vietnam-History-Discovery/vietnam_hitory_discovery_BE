@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
-    top_k: int = Field(5, ge=1, le=20)
+    top_k: int = Field(10, ge=1, le=20)
 
 
 class QueryResponse(BaseModel):
@@ -78,8 +78,15 @@ class EvalResultsResponse(BaseModel):
 # ── Dynasty ────────────────────────────────────────────────────────────────────
 
 class DynastyListItem(BaseModel):
-    name: str
-    mentions: int
+    name:         str
+    mentions:     int
+    period:       Optional[str] = None
+    era:          Optional[str] = None
+    capital:      Optional[str] = None
+    description:  Optional[str] = None
+    key_figures:  List[str] = []
+    key_events:   List[str] = []
+    start_year:   Optional[int] = None
 
 
 class ChunkPreview(BaseModel):
@@ -102,7 +109,7 @@ class DynastyChatContext(BaseModel):
 
 
 class DynastyListResponse(BaseModel):
-    total: int
+    total:     int
     dynasties: List[DynastyListItem]
 
 
