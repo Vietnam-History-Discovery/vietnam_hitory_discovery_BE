@@ -1,0 +1,21 @@
+# Crawling & Parsing
+requests==2.31.0
+beautifulsoup4==4.12.3
+lxml==5.1.0
+
+# NLP Vietnamese
+underthesea==6.8.4
+
+# Data handling
+pandas==2.2.1
+tqdm==4.66.2
+
+# Graph (Phase 3)
+neo4j==5.18.0
+
+# Vector store (Phase 4)
+sentence-transformers==2.7.0
+qdrant-client==1.8.2
+
+# Utils
+python-dotenv==1.0.1

@@ -1,0 +1,170 @@
+"""Dynasty endpoints – direct Cypher queries against the Neo4j knowledge graph."""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+from typing import Any, Dict, List
+
+from fastapi import APIRouter, HTTPException
+
+from app.models import (
+    ChunkPreview,
+    DynastyChatContext,
+    DynastyDetail,
+    DynastyListItem,
+    DynastyListResponse,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/dynasties", tags=["dynasty"])
+
+# ── Lazy Neo4j driver ──────────────────────────────────────────────────────────
+# Initialised on first request; closed via close() in main.py lifespan teardown.
+
+_driver = None
+
+
+def _get_driver():
+    global _driver
+    if _driver is None:
+        from neo4j import GraphDatabase  # type: ignore[import]
+
+        uri = os.environ["NEO4J_URI"]
+        auth = (os.environ["NEO4J_USER"], os.environ["NEO4J_PASSWORD"])
+        _driver = GraphDatabase.driver(uri, auth=auth)
+        logger.info("Dynasty Neo4j driver initialised")
+    return _driver
+
+
+def close() -> None:
+    global _driver
+    if _driver is not None:
+        try:
+            _driver.close()
+        except Exception:
+            pass
+        _driver = None
+
+
+def _run(cypher: str, **params: Any) -> List[Dict]:
+    """Execute a read query and return list of record dicts."""
+    driver = _get_driver()
+    with driver.session() as session:
+        result = session.run(cypher, **params)
+        return [dict(record) for record in result]
+
+
+# ── Endpoints ──────────────────────────────────────────────────────────────────
+
+@router.get("", response_model=DynastyListResponse)
+async def list_dynasties() -> DynastyListResponse:
+    """Return all Dynasty nodes ordered by mention count."""
+    try:
+        rows = await asyncio.to_thread(
+            _run,
+            "MATCH (d:Dynasty) RETURN d.name AS name, COALESCE(d.mentions, 0) AS mentions "
+            "ORDER BY mentions DESC",
+        )
+    except Exception as exc:
+        raise HTTPException(503, f"Neo4j query failed: {exc}") from exc
+
+    dynasties = [DynastyListItem(name=r["name"], mentions=r["mentions"]) for r in rows]
+    return DynastyListResponse(total=len(dynasties), dynasties=dynasties)
+
+
+@router.get("/{name}", response_model=DynastyDetail)
+async def get_dynasty(name: str) -> DynastyDetail:
+    """Return detail for one dynasty: related persons, events, places, sample chunks."""
+    try:
+        # Run all four queries concurrently
+        base_row, persons, events, places, chunks = await asyncio.gather(
+            asyncio.to_thread(
+                _run,
+                "MATCH (d:Dynasty {name: $name}) "
+                "RETURN d.name AS name, COALESCE(d.mentions, 0) AS mentions",
+                name=name,
+            ),
+            asyncio.to_thread(
+                _run,
+                "MATCH (p:Person)-[:CO_OCCURS_WITH]-(d:Dynasty {name: $name}) "
+                "RETURN p.name AS name ORDER BY COALESCE(p.mentions, 0) DESC LIMIT 10",
+                name=name,
+            ),
+            asyncio.to_thread(
+                _run,
+                "MATCH (e:Event)-[:CO_OCCURS_WITH]-(d:Dynasty {name: $name}) "
+                "RETURN e.name AS name LIMIT 5",
+                name=name,
+            ),
+            asyncio.to_thread(
+                _run,
+                "MATCH (pl:Place)-[:CO_OCCURS_WITH]-(d:Dynasty {name: $name}) "
+                "RETURN pl.name AS name LIMIT 5",
+                name=name,
+            ),
+            asyncio.to_thread(
+                _run,
+                "MATCH (c:Chunk)-[:BELONGS_TO_DYNASTY]->(d:Dynasty {name: $name}) "
+                "RETURN c.title AS title, c.text AS text "
+                "ORDER BY c.chunk_id LIMIT 5",
+                name=name,
+            ),
+        )
+    except Exception as exc:
+        raise HTTPException(503, f"Neo4j query failed: {exc}") from exc
+
+    if not base_row:
+        raise HTTPException(404, f"Dynasty '{name}' not found")
+
+    return DynastyDetail(
+        name=base_row[0]["name"],
+        mentions=base_row[0]["mentions"],
+        persons=[r["name"] for r in persons],
+        events=[r["name"] for r in events],
+        places=[r["name"] for r in places],
+        sample_chunks=[
+            ChunkPreview(title=r.get("title", ""), text=r.get("text", ""))
+            for r in chunks
+        ],
+    )
+
+
+@router.get("/{name}/chat-context", response_model=DynastyChatContext)
+async def dynasty_chat_context(name: str) -> DynastyChatContext:
+    """Return a pre-built context string ready to inject into an LLM prompt."""
+    detail: DynastyDetail = await get_dynasty(name)
+
+    lines: list[str] = [
+        f"=== Dynasty: {detail.name} ===",
+        f"Mentioned {detail.mentions} times in historical records.",
+        "",
+    ]
+
+    if detail.persons:
+        lines.append("Key Historical Figures:")
+        lines.extend(f"  - {p}" for p in detail.persons)
+        lines.append("")
+
+    if detail.events:
+        lines.append("Key Events:")
+        lines.extend(f"  - {e}" for e in detail.events)
+        lines.append("")
+
+    if detail.places:
+        lines.append("Key Places:")
+        lines.extend(f"  - {pl}" for pl in detail.places)
+        lines.append("")
+
+    if detail.sample_chunks:
+        lines.append("Sample Historical Passages:")
+        for chunk in detail.sample_chunks:
+            snippet = chunk.text[:300].rstrip()
+            if len(chunk.text) > 300:
+                snippet += " …"
+            lines.append(f"[{chunk.title}]:")
+            lines.append(snippet)
+            lines.append("---")
+
+    return DynastyChatContext(name=detail.name, context="\n".join(lines))
