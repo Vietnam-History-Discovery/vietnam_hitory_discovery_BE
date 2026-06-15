@@ -121,7 +121,7 @@ def query_graph(question: str, top_k: int = 10) -> dict:
         except Exception as exc:
             logger.warning("Dynasty context entity lookup failed: %s", exc)
 
-    chunks = _embed_store.search(clean_question, top_k=top_k)
+    chunks = _embed_store.search(clean_question, top_k=top_k, dynasty_context=dynasty_context)
 
     logger.info("Retrieved %d chunks", len(chunks))
     for i, c in enumerate(chunks, 1):

@@ -8,6 +8,7 @@ Không cần Qdrant server riêng — dùng in-memory vector store
 
 import json
 import os
+from groq import Groq
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional
@@ -52,6 +53,15 @@ _BARE_ENTITY_EXCLUDES = {
     "những", "trong", "về", "cho",
 }
 
+def _tokenize_vi(text: str) -> str:
+    """Segment Vietnamese text into compound words (e.g. 'khởi_nghĩa')."""
+    try:
+        from underthesea import word_tokenize
+        return word_tokenize(text, format="text")
+    except Exception:
+        return text
+
+
 def extract_entity(query: str) -> str:
     query = query.lower().strip()
     query = re.sub(r"[?.!,;:]+$", "", query).strip()
@@ -75,6 +85,29 @@ def extract_entity(query: str) -> str:
         return query
 
     return ""
+
+# ─── BM25 Index ───────────────────────────────────────────────────────────────
+
+class BM25Index:
+    """In-memory BM25Okapi index over Vietnamese-tokenised chunk text."""
+
+    def __init__(self, chunks: list[dict]):
+        from rank_bm25 import BM25Okapi
+        print("📑 Building BM25 index...")
+        self.chunks = chunks
+        corpus = [
+            _tokenize_vi(c.get("text", "").lower()).split()
+            for c in chunks
+        ]
+        self.index = BM25Okapi(corpus)
+        print(f"   BM25 index built over {len(corpus)} chunks\n")
+
+    def search(self, query: str, top_k: int) -> list[tuple[int, float]]:
+        tokens = _tokenize_vi(query.lower()).split()
+        scores = self.index.get_scores(tokens)
+        ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+        return ranked[:top_k]
+
 
 # ─── Step 1: Embeddings ───────────────────────────────────────────────────────
 
@@ -108,16 +141,8 @@ class EmbeddingStore:
             with open(chunk_path, encoding="utf-8") as f:
                 self.chunks = json.load(f)
 
-            # DEBUG
-            print("\n===== HUNG VUONG CHUNKS =====")
-
-            for chunk in self.chunks:
-                if chunk["title"] == "Hùng Vương.":
-                    print(chunk["chunk_id"])
-
-            print("=============================\n")
-
             print(f"   {len(self.chunks)} chunks loaded\n")
+            self.bm25_index = BM25Index(self.chunks)
             return
 
         # Build mới
@@ -155,95 +180,152 @@ class EmbeddingStore:
 
         print("===========================\n")
 
-    def search(self, query: str, top_k: int = TOP_K) -> list[dict]:
+        self.bm25_index = BM25Index(self.chunks)
+
+    def search(
+        self,
+        query: str,
+        top_k: int = TOP_K,
+        dynasty_context: Optional[str] = None,
+    ) -> list[dict]:
         """
-        Cosine similarity + keyword boost + entity boost
+        Hybrid BM25 + Vector search fused via Reciprocal Rank Fusion,
+        then boosted by dynasty context / entity phrase / keyword signals.
         """
 
-        q_vec = self.model.encode(
-            [query],
-            normalize_embeddings=True
-        )[0]
-
-        scores = (self.vectors @ q_vec).copy()
+        candidate_k = top_k * 2
 
         # --------------------------------------------------
-        # Query preprocessing
+        # Step 1: Vector search (segmented query)
+        # --------------------------------------------------
+
+        segmented_query = _tokenize_vi(query)
+
+        q_vec = self.model.encode(
+            [segmented_query],
+            normalize_embeddings=True,
+        )[0]
+
+        vec_scores = self.vectors @ q_vec
+        vec_ranked = sorted(
+            enumerate(vec_scores), key=lambda x: x[1], reverse=True
+        )[:candidate_k]
+
+        # --------------------------------------------------
+        # Step 2: BM25 search
+        # --------------------------------------------------
+
+        bm25_ranked = self.bm25_index.search(query, top_k=candidate_k)
+
+        # --------------------------------------------------
+        # Step 3: Reciprocal Rank Fusion  (K = 60)
+        # --------------------------------------------------
+
+        K = 60
+        rrf_scores: dict[int, float] = {}
+
+        for rank, (chunk_idx, _) in enumerate(vec_ranked):
+            rrf_scores[chunk_idx] = rrf_scores.get(chunk_idx, 0.0) + 1 / (K + rank + 1)
+
+        for rank, (chunk_idx, _) in enumerate(bm25_ranked):
+            rrf_scores[chunk_idx] = rrf_scores.get(chunk_idx, 0.0) + 1 / (K + rank + 1)
+
+        # --------------------------------------------------
+        # Query preprocessing for boost passes
         # --------------------------------------------------
 
         entity = extract_entity(query)
 
         stopwords = {
-            "là", "ai", "gì", "như", "thế", "nào",
-            "và", "của", "có", "được", "đã",
-            "các", "những", "trong", "về",
-            "cho", "với", "tại", "ở"
+            'là', 'ai', 'gì', 'như_thế_nào', 'tại_sao', 'và', 'của', 'có', 'được',
+            'đã', 'các', 'những', 'trong', 'về', 'cho', 'với', 'tại', 'ở', 'lại',
+            'xuất_hiện', 'hiện_nay', 'như_vậy', 'vì_sao', 'bởi_vì',
         }
 
-        query_clean = re.sub(r"[^\w\s]", "", query.lower())
+        query_clean = re.sub(r"[^\w\s]", "", segmented_query.lower())
         query_words = set(query_clean.split())
-        keywords = query_words - stopwords
+        keywords = {w for w in query_words - stopwords if '_' in w or len(w) > 4}
+
+        segmented_dynasty = _tokenize_vi(dynasty_context).lower() if dynasty_context else None
+        dynasty_lower     = dynasty_context.lower()              if dynasty_context else None
 
         print("\n" + "=" * 60)
         print("QUERY:", query)
+        print("SEGMENTED:", segmented_query)
         print("ENTITY:", entity)
         print("KEYWORDS:", keywords)
+
+        vec_top3 = [
+            f"[{self.chunks[idx].get('chunk_id')}, {s:.3f}]"
+            for idx, s in vec_ranked[:3]
+        ]
+        bm25_top3 = [
+            f"[{self.chunks[idx].get('chunk_id')}, {s:.3f}]"
+            for idx, s in bm25_ranked[:3]
+        ]
+        print("VECTOR TOP 3:", ", ".join(vec_top3))
+        print("BM25 TOP 3:  ", ", ".join(bm25_top3))
         print("=" * 60)
 
         # --------------------------------------------------
-        # Boosting
+        # Step 4: Apply boosts on RRF scores
         # --------------------------------------------------
 
-        for i, chunk in enumerate(self.chunks):
+        for chunk_idx, base in list(rrf_scores.items()):
 
-            text_lower = chunk.get("text", "").lower()
+            chunk      = self.chunks[chunk_idx]
+            text_lower  = chunk.get("text", "").lower()
             title_lower = chunk.get("title", "").lower()
 
+            # dynasty context boost — highest priority
+            if dynasty_lower:
+                if (
+                    dynasty_lower in text_lower
+                    or dynasty_lower in title_lower
+                    or (segmented_dynasty and (
+                        segmented_dynasty in text_lower
+                        or segmented_dynasty in title_lower
+                    ))
+                ):
+                    rrf_scores[chunk_idx] = base + 8.0
+
             if entity and len(entity.split()) >= 2:
-                # ---------- entity phrase boost ----------
-                # When entity is known, use precise phrase matching only.
-                # Skipping per-keyword boost prevents generic tokens like
-                # "vương" from boosting hundreds of unrelated chunks.
+                # entity phrase boost — precise match only
                 if entity in title_lower:
-                    scores[i] += 3
+                    rrf_scores[chunk_idx] = rrf_scores[chunk_idx] + 3.0
                     print(
                         f"ENTITY TITLE HIT -> "
                         f"{chunk.get('chunk_id')} | "
                         f"{chunk.get('title')}"
                     )
                 elif entity in text_lower:
-                    scores[i] += 5
-                    print(
-                        f"ENTITY TEXT HIT -> "
-                        f"{chunk.get('chunk_id')}"
-                    )
+                    rrf_scores[chunk_idx] = rrf_scores[chunk_idx] + 5.0
+                    print(f"ENTITY TEXT HIT -> {chunk.get('chunk_id')}")
             else:
-                # ---------- keyword boost ----------
-                # For open-ended queries with no detected entity, boost by
-                # individual keyword hits.
+                # keyword boost — compound words matched in space form
                 hits = sum(
                     1
                     for kw in keywords
-                    if kw in text_lower or kw in title_lower
+                    if kw.replace('_', ' ') in text_lower
+                    or kw.replace('_', ' ') in title_lower
                 )
                 if hits:
-                    scores[i] += hits * 1.0
+                    rrf_scores[chunk_idx] = rrf_scores[chunk_idx] + hits * 1.0
 
         # --------------------------------------------------
-        # Top K
+        # Step 5: Return top_k by final score
         # --------------------------------------------------
 
-        top_idx = np.argsort(scores)[::-1][:top_k]
+        ranked_final = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
 
         print("\n========== RETRIEVAL DEBUG ==========")
+        print("RRF FINAL:")
 
-        for rank, idx in enumerate(top_idx, start=1):
-
-            chunk = self.chunks[idx]
-
+        for rank, (chunk_idx, score) in enumerate(ranked_final, start=1):
+            chunk = self.chunks[chunk_idx]
             print(
                 f"[{rank}] "
-                f"score={scores[idx]:.3f} | "
+                f"score={score:.4f} | "
                 f"id={chunk.get('chunk_id')} | "
                 f"title={chunk.get('title')}"
             )
@@ -251,10 +333,9 @@ class EmbeddingStore:
         print("====================================\n")
 
         results = []
-
-        for idx in top_idx:
-            chunk = self.chunks[idx].copy()
-            chunk["score"] = float(scores[idx])
+        for chunk_idx, score in ranked_final:
+            chunk = self.chunks[chunk_idx].copy()
+            chunk["score"] = score
             results.append(chunk)
 
         return results
@@ -470,12 +551,11 @@ def build_context(
 
 class ClaudeGenerator:
     def __init__(self):
-        import google.generativeai as genai
-        api_key = os.getenv("GEMINI_API_KEY")
+        from openai import OpenAI
+        api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
-            raise ValueError("Thiếu GEMINI_API_KEY trong .env")
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel("gemini-2.5-flash")
+            raise ValueError("Thiếu OPENAI_API_KEY trong .env")
+        self.client = OpenAI(api_key=api_key)
 
     def generate(self, query: str, context: str) -> str:
         prompt = f"""Bạn là chuyên gia lịch sử Việt Nam. Chỉ dùng thông tin từ context sau để trả lời.
@@ -488,8 +568,13 @@ Câu hỏi: {query}
 
 Trả lời bằng tiếng Việt, súc tích và chính xác:"""
 
-        response = self.model.generate_content(prompt)
-        return response.text
+        response = self.client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1024,
+            temperature=0.1,
+        )
+        return response.choices[0].message.content
 
 
 # ─── Main GraphRAG Pipeline ───────────────────────────────────────────────────
