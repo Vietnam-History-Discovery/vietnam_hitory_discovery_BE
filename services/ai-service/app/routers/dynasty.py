@@ -30,21 +30,14 @@ def _get_driver():
     global _driver
     if _driver is None:
         from neo4j import GraphDatabase
-        from dotenv import load_dotenv
-        import pathlib
         
-        # Load .env from project root
-        load_dotenv(pathlib.Path(__file__).parents[4] / ".env", override=True)
-        env_path = pathlib.Path(__file__).parents[4] / ".env"
-        logger.info(f"Loading .env from: {env_path}")
-        load_dotenv(env_path, override=True)
-        logger.info(f"NEO4J_USER={os.environ.get('NEO4J_USER')}")
-        logger.info(f"NEO4J_URI={os.environ.get('NEO4J_URI')}")
+        uri  = os.environ["NEO4J_URI"]
+        user = os.environ.get("NEO4J_USER", "neo4j")
+        pwd  = os.environ["NEO4J_PASSWORD"]
         
-        uri = os.environ["NEO4J_URI"]
-        auth = (os.environ["NEO4J_USER"], os.environ["NEO4J_PASSWORD"])
-        _driver = GraphDatabase.driver(uri, auth=auth)
+        _driver = GraphDatabase.driver(uri, auth=(user, pwd))
         logger.info("Dynasty Neo4j driver initialised")
+    return _driver
         
         
     return _driver

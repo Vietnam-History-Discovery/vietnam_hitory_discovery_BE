@@ -12,7 +12,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 # ── Path setup (must come before any src imports) ──────────────────────────────
-_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+import os
+_PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", "/app"))
 for _p in [
     _PROJECT_ROOT / "src",
     _PROJECT_ROOT / "src" / "graph",
