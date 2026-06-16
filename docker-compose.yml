@@ -49,6 +49,9 @@ services:
     environment:
       - JWT_SECRET=${JWT_SECRET}
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}
+      - USER_SERVICE_URL=${USER_SERVICE_URL}
+      - CHAT_SERVICE_URL=${CHAT_SERVICE_URL}
+      - AI_SERVICE_URL=${AI_SERVICE_URL}
 
   frontend:
     build:
