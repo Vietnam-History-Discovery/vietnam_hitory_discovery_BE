@@ -34,6 +34,7 @@ services:
     environment:
       - CHAT_DB_URL=${CHAT_DB_URL}
       - JWT_SECRET=${JWT_SECRET}
+      - AI_SERVICE_URL=${AI_SERVICE_URL}
     restart: unless-stopped
 
   api-gateway:
