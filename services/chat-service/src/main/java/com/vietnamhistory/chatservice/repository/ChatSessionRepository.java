@@ -4,6 +4,8 @@ import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import com.google.firebase.cloud.FirestoreClient;
 import com.vietnamhistory.chatservice.entity.ChatSession;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
 
 import java.util.ArrayList;
@@ -14,6 +16,8 @@ import java.util.concurrent.ExecutionException;
 @Repository
 public class ChatSessionRepository {
 
+    private static final Logger log = LoggerFactory.getLogger(ChatSessionRepository.class);
+
     private Firestore getFirestore() {
         return FirestoreClient.getFirestore();
     }
@@ -22,10 +26,17 @@ public class ChatSessionRepository {
         try {
             var doc = getFirestore().collection("chat_sessions").document(id).get().get();
             if (doc.exists()) {
-                return Optional.ofNullable(doc.toObject(ChatSession.class));
+                ChatSession session = doc.toObject(ChatSession.class);
+                if (session != null) {
+                    session.setId(doc.getId());
+                }
+                return Optional.ofNullable(session);
             }
-        } catch (InterruptedException | ExecutionException e) {
+        } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            log.error("Firestore findById interrupted for id={}", id, e);
+        } catch (ExecutionException e) {
+            log.error("Firestore findById failed for id={}", id, e);
         }
         return Optional.empty();
     }
@@ -38,23 +49,44 @@ public class ChatSessionRepository {
                     .orderBy("updatedAt", Query.Direction.DESCENDING)
                     .get().get();
             for (var doc : query.getDocuments()) {
-                sessions.add(doc.toObject(ChatSession.class));
+                ChatSession session = doc.toObject(ChatSession.class);
+                if (session != null) {
+                    session.setId(doc.getId());
+                }
+                sessions.add(session);
             }
-        } catch (InterruptedException | ExecutionException e) {
+        } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            log.error("Firestore findByUserId interrupted for userId={}", userId, e);
+        } catch (ExecutionException e) {
+            log.error("Firestore findByUserId failed for userId={}", userId, e);
         }
         return sessions;
     }
 
     public ChatSession save(ChatSession session) {
-        if (session.getId() == null) {
-            session.setId(java.util.UUID.randomUUID().toString());
+        try {
+            if (session.getId() == null) {
+                session.setId(java.util.UUID.randomUUID().toString());
+            }
+            getFirestore().collection("chat_sessions").document(session.getId()).set(session).get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("Firestore save interrupted for session={}", session.getId(), e);
+        } catch (ExecutionException e) {
+            log.error("Firestore save failed for session={}", session.getId(), e);
         }
-        getFirestore().collection("chat_sessions").document(session.getId()).set(session);
         return session;
     }
 
     public void delete(ChatSession session) {
-        getFirestore().collection("chat_sessions").document(session.getId()).delete();
+        try {
+            getFirestore().collection("chat_sessions").document(session.getId()).delete().get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("Firestore delete interrupted for session={}", session.getId(), e);
+        } catch (ExecutionException e) {
+            log.error("Firestore delete failed for session={}", session.getId(), e);
+        }
     }
 }

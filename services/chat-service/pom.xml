@@ -35,11 +35,6 @@
             <version>9.2.0</version>
         </dependency>
 
-        <!-- WebFlux — only for WebClient; app remains servlet-based -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-webflux</artifactId>
-        </dependency>
 
         <!-- Validation -->
         <dependency>

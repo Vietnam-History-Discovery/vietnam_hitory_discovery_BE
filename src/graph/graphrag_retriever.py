@@ -161,8 +161,8 @@ class EmbeddingStore:
 
         # Lưu cache
         np.save(vec_path, self.vectors)
-        with open(chunk_path, encoding="utf-8") as f:
-            self.chunks = json.load(f)
+        with open(chunk_path, "w", encoding="utf-8") as f:
+            json.dump(self.chunks, f, ensure_ascii=False, indent=2)
 
         print(f"   {len(self.chunks)} chunks loaded\n")
 
@@ -551,15 +551,16 @@ def build_context(
 
 class ClaudeGenerator:
     def __init__(self):
-        from openai import OpenAI
-        api_key = os.getenv("OPENAI_API_KEY")
+        from groq import Groq
+        api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
-            raise ValueError("Thiếu OPENAI_API_KEY trong .env")
-        self.client = OpenAI(api_key=api_key)
+            raise ValueError("Thiếu GROQ_API_KEY trong .env")
+        self.client = Groq(api_key=api_key)
 
     def generate(self, query: str, context: str) -> str:
-        prompt = f"""Bạn là chuyên gia lịch sử Việt Nam. Chỉ dùng thông tin từ context sau để trả lời.
-QUAN TRỌNG: Chỉ trả lời dựa trên thông tin có trong context. Nếu context không đề cập, hãy nói "Không có thông tin trong tài liệu."
+        prompt = f"""Bạn là chuyên gia lịch sử Việt Nam. Hãy trả lời câu hỏi của người dùng.
+Bạn sẽ được cung cấp một số thông tin trích xuất từ tài liệu lịch sử (context). Hãy ưu tiên sử dụng thông tin từ context.
+Nếu context không có đủ thông tin, bạn có thể bổ sung bằng kiến thức lịch sử chuyên môn của mình để trả lời một cách đầy đủ và chính xác nhất.
 
 Context:
 {context}
@@ -569,7 +570,7 @@ Câu hỏi: {query}
 Trả lời bằng tiếng Việt, súc tích và chính xác:"""
 
         response = self.client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="llama-3.3-70b-versatile",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1024,
             temperature=0.1,

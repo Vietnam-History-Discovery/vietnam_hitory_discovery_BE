@@ -24,6 +24,8 @@ services:
       - "8081:8081"
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
+    volumes:
+      - ./firebase.json:/app/firebase.json:ro
     restart: unless-stopped
 
   chat-service:
@@ -33,6 +35,8 @@ services:
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
       - AI_SERVICE_URL=${AI_SERVICE_URL}
+    volumes:
+      - ./firebase.json:/app/firebase.json:ro
     restart: unless-stopped
 
   api-gateway:
@@ -43,6 +47,8 @@ services:
       - user-service
       - chat-service
       - ai-service
+    volumes:
+      - ./firebase.json:/app/firebase.json:ro
     restart: unless-stopped
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}

@@ -1,6 +1,5 @@
 package com.vietnamhistory.chatservice.service;
 
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -8,9 +7,12 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
-import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.reactive.function.client.WebClientResponseException;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.RestTemplate;
 
 import com.vietnamhistory.chatservice.dto.AiQueryRequest;
 import com.vietnamhistory.chatservice.dto.AiQueryResponse;
@@ -31,7 +33,6 @@ public class ChatService {
 
     private static final Logger log = LoggerFactory.getLogger(ChatService.class);
     private static final int AI_TOP_K = 10;
-    private static final Duration AI_TIMEOUT = Duration.ofSeconds(30);
 
     @Autowired
     private ChatSessionRepository sessionRepository;
@@ -40,7 +41,7 @@ public class ChatService {
     private ChatMessageRepository messageRepository;
 
     @Autowired
-    private WebClient aiWebClient;
+    private RestTemplate aiRestTemplate;
 
     public SessionDto createSession(String userId, CreateSessionRequest request) {
         String title = (request.title() != null && !request.title().isBlank())
@@ -112,20 +113,22 @@ public class ChatService {
 
     private AiQueryResponse callAiService(String question) {
         try {
-            AiQueryResponse response = aiWebClient.post()
-                    .uri("/query")
-                    .bodyValue(new AiQueryRequest(question, AI_TOP_K))
-                    .retrieve()
-                    .bodyToMono(AiQueryResponse.class)
-                    .timeout(AI_TIMEOUT)
-                    .block();
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.setAccept(List.of(MediaType.APPLICATION_JSON));
+
+            HttpEntity<AiQueryRequest> entity = new HttpEntity<>(
+                    new AiQueryRequest(question, AI_TOP_K), headers);
+
+            AiQueryResponse response = aiRestTemplate.postForObject(
+                    "/query", entity, AiQueryResponse.class);
 
             if (response == null) {
                 throw new RuntimeException("AI service returned empty response");
             }
             return response;
 
-        } catch (WebClientResponseException e) {
+        } catch (HttpStatusCodeException e) {
             log.error("AI service HTTP error {}: {}", e.getStatusCode(), e.getResponseBodyAsString());
             throw new RuntimeException("AI service error: " + e.getStatusCode());
         } catch (Exception e) {
@@ -135,7 +138,14 @@ public class ChatService {
     }
 
     private ChatSession findSessionForUser(String userId, String sessionId) {
-        return sessionRepository.findById(sessionId)
+        log.info("findSessionForUser: userId={}, sessionId={}", userId, sessionId);
+        var optSession = sessionRepository.findById(sessionId);
+        log.info("findSessionForUser: found={}", optSession.isPresent());
+        if (optSession.isPresent()) {
+            var s = optSession.get();
+            log.info("findSessionForUser: session.userId={}, session.id={}", s.getUserId(), s.getId());
+        }
+        return optSession
                 .filter(s -> s.getUserId().equals(userId))
                 .orElseThrow(() -> new RuntimeException("Session not found"));
     }
