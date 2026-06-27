@@ -20,8 +20,8 @@ Frontend (React/Vite)
         ▼
 API Gateway :8080 (Spring Cloud Gateway + JWT)
         │
-        ├──▶ User Service :8081   (Auth + PostgreSQL)
-        ├──▶ Chat Service :8082   (Chat history + PostgreSQL)
+        ├──▶ User Service :8081   (Profile + Firestore)
+        ├──▶ Chat Service :8082   (Chat history + Firestore)
         └──▶ AI Service   :8001   (GraphRAG pipeline)
                 │
                 ├──▶ Neo4j AuraDB      (Knowledge Graph)

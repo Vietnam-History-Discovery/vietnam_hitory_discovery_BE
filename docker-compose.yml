@@ -55,8 +55,17 @@ services:
     build:
       context: ../vietnam_history_discovery_FE
       dockerfile: Dockerfile
+      args:
+        - VITE_FIREBASE_API_KEY=${VITE_FIREBASE_API_KEY}
+        - VITE_FIREBASE_AUTH_DOMAIN=${VITE_FIREBASE_AUTH_DOMAIN}
+        - VITE_FIREBASE_PROJECT_ID=${VITE_FIREBASE_PROJECT_ID}
+        - VITE_FIREBASE_STORAGE_BUCKET=${VITE_FIREBASE_STORAGE_BUCKET}
+        - VITE_FIREBASE_MESSAGING_SENDER_ID=${VITE_FIREBASE_MESSAGING_SENDER_ID}
+        - VITE_FIREBASE_APP_ID=${VITE_FIREBASE_APP_ID}
     ports:
       - "3000:80"
+    environment:
+      - API_GATEWAY_URL=http://api-gateway:8080
     depends_on:
       - api-gateway
-    restart: unless-stopped 
+    restart: unless-stopped
