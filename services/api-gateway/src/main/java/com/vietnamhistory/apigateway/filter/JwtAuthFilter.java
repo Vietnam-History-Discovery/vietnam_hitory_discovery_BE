@@ -1,12 +1,10 @@
 package com.vietnamhistory.apigateway.filter;
 
-import io.jsonwebtoken.Claims;
-import io.jsonwebtoken.JwtException;
-import io.jsonwebtoken.Jwts;
-import io.jsonwebtoken.security.Keys;
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.FirebaseAuthException;
+import com.google.firebase.auth.FirebaseToken;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
@@ -21,7 +19,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
-import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -29,9 +26,6 @@ import java.util.List;
 public class JwtAuthFilter implements GlobalFilter, Ordered {
 
     private static final Logger log = LoggerFactory.getLogger(JwtAuthFilter.class);
-
-    @Value("${jwt.secret}")
-    private String secret;
 
     // Paths that bypass JWT validation
     private static final List<String> PUBLIC_PREFIXES = List.of("/api/auth/");
@@ -61,21 +55,19 @@ public class JwtAuthFilter implements GlobalFilter, Ordered {
         String token = authHeader.substring(7);
 
         try {
-            Claims claims = parseClaims(token);
-
-            String email = claims.getSubject();
-            // userId claim is optional; falls back to email until user-service adds it to JWT
-            String userId = claims.get("userId", String.class);
+            FirebaseToken decodedToken = FirebaseAuth.getInstance().verifyIdToken(token);
+            String email = decodedToken.getEmail();
+            String uid = decodedToken.getUid();
 
             ServerHttpRequest mutatedRequest = request.mutate()
-                    .header("X-User-Email", email)
-                    .header("X-User-Id", userId != null ? userId : email)
+                    .header("X-User-Email", email != null ? email : "")
+                    .header("X-User-Id", uid)
                     .build();
 
-            log.debug("JWT valid for {}; forwarding to {}", email, path);
+            log.debug("JWT valid for uid {}; forwarding to {}", uid, path);
             return chain.filter(exchange.mutate().request(mutatedRequest).build());
 
-        } catch (JwtException | IllegalArgumentException e) {
+        } catch (FirebaseAuthException e) {
             log.debug("JWT validation failed: {}", e.getMessage());
             return sendUnauthorized(exchange, "Invalid or expired token");
         }
@@ -87,15 +79,6 @@ public class JwtAuthFilter implements GlobalFilter, Ordered {
 
     private boolean isPreflightRequest(ServerHttpRequest request) {
         return HttpMethod.OPTIONS.equals(request.getMethod());
-    }
-
-    private Claims parseClaims(String token) {
-        SecretKey key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
-        return Jwts.parser()
-                .verifyWith(key)
-                .build()
-                .parseSignedClaims(token)
-                .getPayload();
     }
 
     private Mono<Void> sendUnauthorized(ServerWebExchange exchange, String message) {

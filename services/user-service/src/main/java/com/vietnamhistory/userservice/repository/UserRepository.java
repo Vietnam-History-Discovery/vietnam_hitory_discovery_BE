@@ -1,18 +1,45 @@
 package com.vietnamhistory.userservice.repository;
 
+import com.google.cloud.firestore.Firestore;
+import com.google.cloud.firestore.QueryDocumentSnapshot;
+import com.google.firebase.cloud.FirestoreClient;
 import com.vietnamhistory.userservice.entity.User;
-import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
-import java.util.UUID;
+import java.util.concurrent.ExecutionException;
 
 @Repository
-public interface UserRepository extends JpaRepository<User, UUID> {
+public class UserRepository {
 
-    Optional<User> findByEmail(String email);
+    private Firestore getFirestore() {
+        return FirestoreClient.getFirestore();
+    }
 
-    boolean existsByEmail(String email);
+    public Optional<User> findById(String id) {
+        try {
+            var doc = getFirestore().collection("users").document(id).get().get();
+            if (doc.exists()) {
+                return Optional.ofNullable(doc.toObject(User.class));
+            }
+        } catch (InterruptedException | ExecutionException e) {
+            Thread.currentThread().interrupt();
+        }
+        return Optional.empty();
+    }
 
-    boolean existsByUsername(String username);
+    public boolean existsByUsername(String username) {
+        try {
+            var query = getFirestore().collection("users").whereEqualTo("username", username).get().get();
+            return !query.isEmpty();
+        } catch (InterruptedException | ExecutionException e) {
+            Thread.currentThread().interrupt();
+        }
+        return false;
+    }
+
+    public User save(User user) {
+        getFirestore().collection("users").document(user.getId()).set(user);
+        return user;
+    }
 }

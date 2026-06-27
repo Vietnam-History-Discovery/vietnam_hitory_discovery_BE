@@ -1,42 +1,27 @@
 package com.vietnamhistory.chatservice.entity;
 
-import jakarta.persistence.*;
 import java.time.LocalDateTime;
-import java.util.UUID;
 
-@Entity
-@Table(name = "chat_sessions")
 public class ChatSession {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.UUID)
-    private UUID id;
-
-    @Column(nullable = false)
+    private String id;
     private String userId;
-
-    @Column(nullable = false)
     private String title;
+    private String createdAt;
+    private String updatedAt;
 
-    @Column(nullable = false, updatable = false)
-    private LocalDateTime createdAt;
+    public ChatSession() {}
 
-    @Column(nullable = false)
-    private LocalDateTime updatedAt;
-
-    @PrePersist
-    protected void onCreate() {
-        createdAt = LocalDateTime.now();
-        updatedAt = LocalDateTime.now();
+    public ChatSession(String id, String userId, String title) {
+        this.id = id;
+        this.userId = userId;
+        this.title = title;
+        this.createdAt = LocalDateTime.now().toString();
+        this.updatedAt = this.createdAt;
     }
 
-    @PreUpdate
-    protected void onUpdate() {
-        updatedAt = LocalDateTime.now();
-    }
-
-    public UUID getId() { return id; }
-    public void setId(UUID id) { this.id = id; }
+    public String getId() { return id; }
+    public void setId(String id) { this.id = id; }
 
     public String getUserId() { return userId; }
     public void setUserId(String userId) { this.userId = userId; }
@@ -44,8 +29,9 @@ public class ChatSession {
     public String getTitle() { return title; }
     public void setTitle(String title) { this.title = title; }
 
-    public LocalDateTime getCreatedAt() { return createdAt; }
+    public String getCreatedAt() { return createdAt; }
+    public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
 
-    public LocalDateTime getUpdatedAt() { return updatedAt; }
-    public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
+    public String getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(String updatedAt) { this.updatedAt = updatedAt; }
 }

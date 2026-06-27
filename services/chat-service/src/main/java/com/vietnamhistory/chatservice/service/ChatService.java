@@ -3,14 +3,12 @@ package com.vietnamhistory.chatservice.service;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.UUID;
 import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
@@ -44,7 +42,6 @@ public class ChatService {
     @Autowired
     private WebClient aiWebClient;
 
-    @Transactional
     public SessionDto createSession(String userId, CreateSessionRequest request) {
         String title = (request.title() != null && !request.title().isBlank())
                 ? request.title()
@@ -55,7 +52,6 @@ public class ChatService {
         return toSessionDto(sessionRepository.save(session));
     }
 
-    @Transactional(readOnly = true)
     public List<SessionDto> getUserSessions(String userId) {
         return sessionRepository.findByUserIdOrderByUpdatedAtDesc(userId)
                 .stream()
@@ -63,8 +59,7 @@ public class ChatService {
                 .collect(Collectors.toList());
     }
 
-    @Transactional(readOnly = true)
-    public SessionWithMessagesDto getSession(String userId, UUID sessionId) {
+    public SessionWithMessagesDto getSession(String userId, String sessionId) {
         ChatSession session = findSessionForUser(userId, sessionId);
         List<MessageDto> messages = messageRepository
                 .findBySessionIdOrderByCreatedAtAsc(sessionId)
@@ -74,56 +69,46 @@ public class ChatService {
         return new SessionWithMessagesDto(toSessionDto(session), messages);
     }
 
-    @Transactional
-    public void deleteSession(String userId, UUID sessionId) {
+    public void deleteSession(String userId, String sessionId) {
         ChatSession session = findSessionForUser(userId, sessionId);
         messageRepository.deleteBySessionId(sessionId);
         sessionRepository.delete(session);
     }
 
-    @Transactional
-    public AskResponse ask(String userId, UUID sessionId, AskRequest request) {
+    public AskResponse ask(String userId, String sessionId, AskRequest request) {
         ChatSession session = findSessionForUser(userId, sessionId);
 
-        // Prepend optional context before sending to AI
         String aiQuestion = (request.context() != null && !request.context().isBlank())
                 ? "[" + request.context() + "] " + request.question()
                 : request.question();
 
-        // Call AI service — block() is acceptable in a servlet thread
         AiQueryResponse aiResponse = callAiService(aiQuestion);
 
-        // Persist user message (original question, without injected context)
         ChatMessage userMsg = new ChatMessage();
         userMsg.setSessionId(sessionId);
         userMsg.setRole(MessageRole.USER);
         userMsg.setContent(request.question());
         messageRepository.save(userMsg);
 
-        // Persist assistant reply
         ChatMessage assistantMsg = new ChatMessage();
         assistantMsg.setSessionId(sessionId);
         assistantMsg.setRole(MessageRole.ASSISTANT);
         assistantMsg.setContent(aiResponse.answer());
         messageRepository.save(assistantMsg);
 
-        // Touch session so it bubbles to the top of the list
-        session.setUpdatedAt(LocalDateTime.now());
+        session.setUpdatedAt(LocalDateTime.now().toString());
         sessionRepository.save(session);
 
         return new AskResponse(aiResponse.answer(), aiResponse.chunksUsed(), aiResponse.entities(), aiResponse.graphNodes());
     }
 
-    @Transactional(readOnly = true)
-    public List<MessageDto> getMessages(String userId, UUID sessionId) {
+    public List<MessageDto> getMessages(String userId, String sessionId) {
         findSessionForUser(userId, sessionId);
         return messageRepository.findBySessionIdOrderByCreatedAtAsc(sessionId)
                 .stream()
                 .map(this::toMessageDto)
                 .collect(Collectors.toList());
     }
-
-    // ─── Helpers ─────────────────────────────────────────────────────────────
 
     private AiQueryResponse callAiService(String question) {
         try {
@@ -149,7 +134,7 @@ public class ChatService {
         }
     }
 
-    private ChatSession findSessionForUser(String userId, UUID sessionId) {
+    private ChatSession findSessionForUser(String userId, String sessionId) {
         return sessionRepository.findById(sessionId)
                 .filter(s -> s.getUserId().equals(userId))
                 .orElseThrow(() -> new RuntimeException("Session not found"));

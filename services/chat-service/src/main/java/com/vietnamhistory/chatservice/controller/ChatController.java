@@ -11,7 +11,6 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
-import java.util.UUID;
 
 @RestController
 @RequestMapping("/api/chat")
@@ -36,14 +35,14 @@ public class ChatController {
 
     @GetMapping("/sessions/{id}")
     public ResponseEntity<SessionWithMessagesDto> getSession(
-            @PathVariable UUID id,
+            @PathVariable String id,
             HttpServletRequest httpRequest) {
         return ResponseEntity.ok(chatService.getSession(extractUserId(httpRequest), id));
     }
 
     @DeleteMapping("/sessions/{id}")
     public ResponseEntity<Void> deleteSession(
-            @PathVariable UUID id,
+            @PathVariable String id,
             HttpServletRequest httpRequest) {
         chatService.deleteSession(extractUserId(httpRequest), id);
         return ResponseEntity.noContent().build();
@@ -51,7 +50,7 @@ public class ChatController {
 
     @PostMapping("/sessions/{id}/ask")
     public ResponseEntity<AskResponse> ask(
-            @PathVariable UUID id,
+            @PathVariable String id,
             @Valid @RequestBody AskRequest request,
             HttpServletRequest httpRequest) {
         return ResponseEntity.ok(chatService.ask(extractUserId(httpRequest), id, request));
@@ -59,7 +58,7 @@ public class ChatController {
 
     @GetMapping("/sessions/{id}/messages")
     public ResponseEntity<List<MessageDto>> getMessages(
-            @PathVariable UUID id,
+            @PathVariable String id,
             HttpServletRequest httpRequest) {
         return ResponseEntity.ok(chatService.getMessages(extractUserId(httpRequest), id));
     }

@@ -1,41 +1,30 @@
 package com.vietnamhistory.chatservice.entity;
 
-import jakarta.persistence.*;
 import java.time.LocalDateTime;
-import java.util.UUID;
 
-@Entity
-@Table(name = "chat_messages",
-       indexes = @Index(name = "idx_message_session", columnList = "sessionId"))
 public class ChatMessage {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.UUID)
-    private UUID id;
-
-    @Column(nullable = false)
-    private UUID sessionId;
-
-    @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    private String id;
+    private String sessionId;
     private MessageRole role;
-
-    @Column(nullable = false, columnDefinition = "TEXT")
     private String content;
+    private String createdAt;
 
-    @Column(nullable = false, updatable = false)
-    private LocalDateTime createdAt;
+    public ChatMessage() {}
 
-    @PrePersist
-    protected void onCreate() {
-        createdAt = LocalDateTime.now();
+    public ChatMessage(String id, String sessionId, MessageRole role, String content) {
+        this.id = id;
+        this.sessionId = sessionId;
+        this.role = role;
+        this.content = content;
+        this.createdAt = LocalDateTime.now().toString();
     }
 
-    public UUID getId() { return id; }
-    public void setId(UUID id) { this.id = id; }
+    public String getId() { return id; }
+    public void setId(String id) { this.id = id; }
 
-    public UUID getSessionId() { return sessionId; }
-    public void setSessionId(UUID sessionId) { this.sessionId = sessionId; }
+    public String getSessionId() { return sessionId; }
+    public void setSessionId(String sessionId) { this.sessionId = sessionId; }
 
     public MessageRole getRole() { return role; }
     public void setRole(MessageRole role) { this.role = role; }
@@ -43,5 +32,6 @@ public class ChatMessage {
     public String getContent() { return content; }
     public void setContent(String content) { this.content = content; }
 
-    public LocalDateTime getCreatedAt() { return createdAt; }
+    public String getCreatedAt() { return createdAt; }
+    public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
 }

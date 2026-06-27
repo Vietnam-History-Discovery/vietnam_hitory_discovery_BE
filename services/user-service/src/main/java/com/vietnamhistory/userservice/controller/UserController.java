@@ -4,11 +4,9 @@ import com.vietnamhistory.userservice.dto.UpdateUserRequest;
 import com.vietnamhistory.userservice.dto.UserDto;
 import com.vietnamhistory.userservice.entity.User;
 import com.vietnamhistory.userservice.repository.UserRepository;
-import com.vietnamhistory.userservice.service.AuthService;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
@@ -19,15 +17,23 @@ public class UserController {
     private UserRepository userRepository;
 
     @GetMapping("/me")
-    public ResponseEntity<UserDto> getMe(Authentication authentication) {
-        User user = findByAuth(authentication);
-        return ResponseEntity.ok(AuthService.toDto(user));
+    public ResponseEntity<UserDto> getMe(@RequestHeader("X-User-Id") String userId,
+                                         @RequestHeader(value = "X-User-Email", required = false) String email) {
+        User user = userRepository.findById(userId).orElseGet(() -> {
+            // Auto-create user doc if missing
+            User newUser = new User(userId, email != null ? email.split("@")[0] : "User", email);
+            return userRepository.save(newUser);
+        });
+        return ResponseEntity.ok(toDto(user));
     }
 
     @PutMapping("/me")
     public ResponseEntity<UserDto> updateMe(@Valid @RequestBody UpdateUserRequest request,
-                                            Authentication authentication) {
-        User user = findByAuth(authentication);
+                                            @RequestHeader("X-User-Id") String userId,
+                                            @RequestHeader(value = "X-User-Email", required = false) String email) {
+        User user = userRepository.findById(userId).orElseGet(() -> {
+            return new User(userId, email != null ? email.split("@")[0] : "User", email);
+        });
 
         if (!user.getUsername().equals(request.username())
                 && userRepository.existsByUsername(request.username())) {
@@ -35,12 +41,10 @@ public class UserController {
         }
 
         user.setUsername(request.username());
-        return ResponseEntity.ok(AuthService.toDto(userRepository.save(user)));
+        return ResponseEntity.ok(toDto(userRepository.save(user)));
     }
 
-    private User findByAuth(Authentication authentication) {
-        String email = authentication.getName();
-        return userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("User not found"));
+    private UserDto toDto(User user) {
+        return new UserDto(user.getId(), user.getUsername(), user.getEmail(), user.getRole().name());
     }
 }
