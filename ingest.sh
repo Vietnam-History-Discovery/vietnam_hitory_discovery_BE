@@ -42,7 +42,7 @@ docker compose exec -T ai-service bash -c "python src/parsers/text_cleaner.py"
 echo "🧠 [3/5] Extracting Entities (NER)..."
 docker compose exec -T ai-service bash -c "python src/parsers/ner_extractor.py"
 
-echo "🕸️  [4/5] Building Knowledge Graph in Neo4j..."
+echo "🕸️  [4/5] Building Knowledge Graph in Neo4j..." 
 docker compose exec -T ai-service bash -c "python src/graph/graph_builder.py"
 
 echo "🔄 [5/5] Restarting AI Service to load new embeddings..."
