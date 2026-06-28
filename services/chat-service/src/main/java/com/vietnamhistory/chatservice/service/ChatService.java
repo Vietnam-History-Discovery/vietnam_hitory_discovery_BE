@@ -82,19 +82,25 @@ public class ChatService {
         String aiQuestion = (request.context() != null && !request.context().isBlank())
                 ? "[" + request.context() + "] " + request.question()
                 : request.question();
-
-        AiQueryResponse aiResponse = callAiService(aiQuestion);
+        long nextSequence = messageRepository.nextSequence(sessionId);
 
         ChatMessage userMsg = new ChatMessage();
         userMsg.setSessionId(sessionId);
         userMsg.setRole(MessageRole.USER);
         userMsg.setContent(request.question());
+        userMsg.setSequence(nextSequence);
         messageRepository.save(userMsg);
+
+        session.setUpdatedAt(LocalDateTime.now().toString());
+        sessionRepository.save(session);
+
+        AiQueryResponse aiResponse = callAiService(aiQuestion);
 
         ChatMessage assistantMsg = new ChatMessage();
         assistantMsg.setSessionId(sessionId);
         assistantMsg.setRole(MessageRole.ASSISTANT);
         assistantMsg.setContent(aiResponse.answer());
+        assistantMsg.setSequence(nextSequence + 1);
         messageRepository.save(assistantMsg);
 
         session.setUpdatedAt(LocalDateTime.now().toString());
@@ -155,6 +161,6 @@ public class ChatService {
     }
 
     private MessageDto toMessageDto(ChatMessage m) {
-        return new MessageDto(m.getId(), m.getSessionId(), m.getRole(), m.getContent(), m.getCreatedAt());
+        return new MessageDto(m.getId(), m.getSessionId(), m.getRole(), m.getContent(), m.getCreatedAt(), m.getSequence());
     }
 }

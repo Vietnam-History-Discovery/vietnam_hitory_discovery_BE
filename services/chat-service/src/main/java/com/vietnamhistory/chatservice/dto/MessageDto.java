@@ -7,5 +7,6 @@ public record MessageDto(
         String sessionId,
         MessageRole role,
         String content,
-        String createdAt
+        String createdAt,
+        Long sequence
 ) {}

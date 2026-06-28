@@ -69,6 +69,12 @@ public class ChatSessionRepository {
             if (session.getId() == null) {
                 session.setId(java.util.UUID.randomUUID().toString());
             }
+            if (session.getCreatedAt() == null) {
+                session.setCreatedAt(java.time.LocalDateTime.now().toString());
+            }
+            if (session.getUpdatedAt() == null) {
+                session.setUpdatedAt(session.getCreatedAt());
+            }
             getFirestore().collection("chat_sessions").document(session.getId()).set(session).get();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

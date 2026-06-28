@@ -9,6 +9,7 @@ public class ChatMessage {
     private MessageRole role;
     private String content;
     private String createdAt;
+    private Long sequence;
 
     public ChatMessage() {}
 
@@ -34,4 +35,7 @@ public class ChatMessage {
 
     public String getCreatedAt() { return createdAt; }
     public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
+
+    public Long getSequence() { return sequence; }
+    public void setSequence(Long sequence) { this.sequence = sequence; }
 }
