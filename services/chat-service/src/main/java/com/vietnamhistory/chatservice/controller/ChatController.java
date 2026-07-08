@@ -1,6 +1,7 @@
 package com.vietnamhistory.chatservice.controller;
 
 import com.vietnamhistory.chatservice.dto.*;
+import com.vietnamhistory.chatservice.entity.SessionType;
 import com.vietnamhistory.chatservice.service.ChatService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
@@ -29,8 +30,20 @@ public class ChatController {
     }
 
     @GetMapping("/sessions")
-    public ResponseEntity<List<SessionDto>> getSessions(HttpServletRequest httpRequest) {
-        return ResponseEntity.ok(chatService.getUserSessions(extractUserId(httpRequest)));
+    public ResponseEntity<List<SessionDto>> getSessions(
+            @RequestParam(required = false) String type,
+            HttpServletRequest httpRequest) {
+        String userId = extractUserId(httpRequest);
+        if (type != null && !type.isBlank()) {
+            SessionType sessionType;
+            try {
+                sessionType = SessionType.valueOf(type.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                sessionType = null;
+            }
+            return ResponseEntity.ok(chatService.getUserSessionsByType(userId, sessionType));
+        }
+        return ResponseEntity.ok(chatService.getUserSessions(userId));
     }
 
     @GetMapping("/sessions/{id}")
@@ -54,6 +67,14 @@ public class ChatController {
             @Valid @RequestBody AskRequest request,
             HttpServletRequest httpRequest) {
         return ResponseEntity.ok(chatService.ask(extractUserId(httpRequest), id, request));
+    }
+
+    @PostMapping("/sessions/{id}/timeline")
+    public ResponseEntity<TimelineResponse> askTimeline(
+            @PathVariable String id,
+            @Valid @RequestBody TimelineRequest request,
+            HttpServletRequest httpRequest) {
+        return ResponseEntity.ok(chatService.askTimeline(extractUserId(httpRequest), id, request));
     }
 
     @GetMapping("/sessions/{id}/messages")

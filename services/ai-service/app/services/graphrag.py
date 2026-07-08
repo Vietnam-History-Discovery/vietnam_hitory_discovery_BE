@@ -3,8 +3,13 @@
 Loaded once at startup via load() and reused across all requests.
 """
 from __future__ import annotations
+import json
 import logging
+import os
+import uuid
 from typing import Optional
+
+from groq import Groq
 
 logger = logging.getLogger(__name__)
 
@@ -182,3 +187,188 @@ def query_naive(question: str, top_k: int = 10) -> dict:
         "answer": answer,
         "chunks_used": len(chunks) if chunks else 0,
     }
+
+
+# ── Timeline generation ──────────────────────────────────────────────────────
+
+_TIMELINE_MODEL = os.getenv("TIMELINE_MODEL", "openai/gpt-oss-120b")
+
+_TIMELINE_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "events": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "dateLabel": {"type": "string"},
+                    "start_year": {"type": ["integer", "null"]},
+                    "end_year": {"type": ["integer", "null"]},
+                    "title": {"type": "string"},
+                    "description": {"type": "string"},
+                    "related_entities": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["id", "dateLabel", "start_year", "end_year", "title", "description", "related_entities"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["title", "events"],
+    "additionalProperties": False,
+}
+
+_TIMELINE_SYSTEM_PROMPT = """Bạn là chuyên gia lịch sử Việt Nam. Dựa vào nội dung lịch sử được cung cấp, hãy tạo một dòng thời gian (timeline) gồm các sự kiện chính.
+
+Yêu cầu:
+- Trả về JSON đúng schema với title (tiêu đề timeline) và events (mảng sự kiện)
+- Mỗi sự kiện có: id (duy nhất), dateLabel (nhãn hiển thị, VD: "Thế kỷ X", "Năm 179 TCN", "Khoảng năm 40"), start_year (năm bắt đầu bằng số, BCE là số âm), end_year (năm kết thúc bằng số, có thể null), title (tiêu đề), description (mô tả), related_entities (các thực thể liên quan)
+- Sắp xếp sự kiện theo thứ tự thời gian tăng dần (start_year nếu có, nếu không thì dùng dateLabel)
+- LUÔN tạo ít nhất 3-5 sự kiện dựa vào kiến thức lịch sử của bạn. Chỉ trả về events rỗng khi thực sự không biết gì về chủ đề này.
+- Nội dung bằng tiếng Việt
+- Tối đa 20 sự kiện"""
+
+
+def query_timeline(
+    question: str,
+    context: Optional[str] = None,
+    current_snapshot: Optional[dict] = None,
+    recent_exchanges: Optional[list[dict]] = None,
+) -> dict:
+    """Generate a timeline snapshot using GraphRAG retrieval + Groq JSON Schema."""
+    from graphrag_retriever import build_context, extract_entity  # type: ignore[import]
+
+    if not _ready:
+        raise RuntimeError("GraphRAG not initialised")
+
+    dynasty_context: Optional[str] = None
+    clean_question = question
+    if question.startswith("[") and "]" in question:
+        end = question.index("]")
+        dynasty_context = question[1:end].strip()
+        clean_question = question[end + 1:].strip()
+
+    if context:
+        dynasty_context = context
+
+    entity_info = None
+    entity = extract_entity(clean_question)
+    if entity and _neo4j_ok and _graph_expander is not None:
+        try:
+            entity_info = _graph_expander.lookup_entity(entity)
+        except Exception as exc:
+            logger.warning("Entity lookup failed: %s", exc)
+
+    if entity_info is None and dynasty_context and _neo4j_ok and _graph_expander is not None:
+        try:
+            entity_info = _graph_expander.lookup_entity(dynasty_context)
+        except Exception as exc:
+            logger.warning("Dynasty context entity lookup failed: %s", exc)
+
+    chunks = _embed_store.search(clean_question, top_k=10, dynasty_context=dynasty_context)
+    chunk_ids = [c.get("chunk_id", c.get("id", "")) for c in chunks]
+
+    graph_data: dict = {}
+    if _neo4j_ok and _graph_expander is not None:
+        try:
+            graph_data = _graph_expander.expand(chunk_ids)
+        except Exception as exc:
+            logger.warning("Graph expansion failed: %s", exc)
+
+    context_str = build_context(clean_question, chunks, graph_data, entity_info=entity_info)
+    if dynasty_context:
+        context_str = f"## Triều đại đang xem: {dynasty_context}\n\n" + context_str
+
+    user_prompt_parts = [f"Câu hỏi: {clean_question}\n\nThông tin lịch sử:\n{context_str}"]
+
+    if current_snapshot:
+        user_prompt_parts.append(
+            f"\n\nTimeline hiện tại:\nTiêu đề: {current_snapshot.get('title', '')}\n"
+            f"Số sự kiện: {len(current_snapshot.get('events', []))}"
+        )
+
+    if recent_exchanges:
+        user_prompt_parts.append("\n\nLịch sử hội thoại gần đây:")
+        for i, ex in enumerate(recent_exchanges[-3:], 1):
+            user = ex.get("user", "")
+            assistant = ex.get("assistant", "")
+            if user:
+                user_prompt_parts.append(f"[Lần {i}] Người dùng: {user}")
+            if assistant:
+                user_prompt_parts.append(f"[Lần {i}] Trợ lý: {assistant[:200]}")
+
+    user_prompt = "\n".join(user_prompt_parts)
+
+    try:
+        from groq import Groq
+
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise ValueError("Thiếu GROQ_API_KEY trong .env")
+
+        client = Groq(api_key=api_key)
+
+        response = client.chat.completions.create(
+            model=_TIMELINE_MODEL,
+            messages=[
+                {"role": "system", "content": _TIMELINE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "timeline_snapshot",
+                    "schema": _TIMELINE_JSON_SCHEMA,
+                    "strict": True,
+                },
+            },
+            max_tokens=4096,
+            temperature=0.1,
+        )
+
+        raw = response.choices[0].message.content
+        if not raw:
+            raise ValueError("Empty response from LLM")
+
+        timeline_data = json.loads(raw)
+        from app.models import TimelineSnapshot
+
+        snapshot = TimelineSnapshot(**timeline_data)
+
+        if not snapshot.events:
+            raise ValueError("Generated timeline has no events")
+
+        snapshot.events.sort(
+            key=lambda e: (
+                e.start_year if e.start_year is not None
+                else (e.end_year if e.end_year is not None else 9999)
+            )
+        )
+
+        if not snapshot.id:
+            snapshot.id = str(uuid.uuid4())
+
+        entities = graph_data.get("entities", [])
+        graph_nodes_val = (
+            len(graph_data.get("nodes", []))
+            or len(graph_data.get("graph_context", []))
+            or len(entities)
+        )
+
+        summary = f"**{snapshot.title}** - {len(snapshot.events)} sự kiện lịch sử"
+
+        return {
+            "answer": summary,
+            "timeline": snapshot.model_dump(),
+            "chunks_used": len(chunks),
+            "entities": entities if isinstance(entities, list) else list(entities),
+            "graph_nodes": graph_nodes_val,
+        }
+
+    except Exception as exc:
+        logger.error("Timeline generation failed: %s", exc)
+        raise RuntimeError(f"Timeline generation failed: {exc}")

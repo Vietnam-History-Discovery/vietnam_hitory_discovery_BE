@@ -523,13 +523,13 @@ def build_context(
         parts.append("")
 
     # B. Entities tìm được
-    if graph_data["entities"]:
+    if graph_data.get("entities"):
         parts.append("## Nhân vật / Địa danh / Sự kiện liên quan\n")
         parts.append(", ".join(graph_data["entities"]))
         parts.append("")
 
     # C. Quan hệ từ graph
-    if graph_data["relations"]:
+    if graph_data.get("relations"):
         parts.append("## Quan hệ trong Knowledge Graph\n")
         for r in graph_data["relations"][:15]:
             weight = f" (x{r['weight']})" if r.get("weight") else ""
@@ -537,7 +537,7 @@ def build_context(
         parts.append("")
 
     # D. Chunks bổ sung từ graph traversal
-    if graph_data["neighbor_chunks"]:
+    if graph_data.get("neighbor_chunks"):
         parts.append("## Đoạn văn bổ sung (từ graph traversal)\n")
         for chunk in graph_data["neighbor_chunks"]:
             parts.append(f"[+] {chunk['title']}")

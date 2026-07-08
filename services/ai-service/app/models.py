@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field
+from datetime import datetime
 
 
 # ── Query ──────────────────────────────────────────────────────────────────────
@@ -111,6 +112,39 @@ class DynastyChatContext(BaseModel):
 class DynastyListResponse(BaseModel):
     total:     int
     dynasties: List[DynastyListItem]
+
+
+# ── Timeline ───────────────────────────────────────────────────────────────────
+
+class TimelineEvent(BaseModel):
+    id: str = Field(..., description="Unique identifier for the event")
+    dateLabel: str = Field(..., description="Display date label (e.g. 'Thế kỷ X', 'Năm 179 TCN')")
+    start_year: Optional[int] = Field(None, description="Numeric start year for sorting; negative for BCE")
+    end_year: Optional[int] = Field(None, description="Numeric end year for sorting; negative for BCE")
+    title: str = Field(..., description="Event title in Vietnamese")
+    description: str = Field(..., description="Event description in Vietnamese")
+    related_entities: List[str] = Field(default_factory=list, description="Related historical entities")
+
+
+class TimelineSnapshot(BaseModel):
+    id: str = Field("", description="Unique snapshot identifier (auto-generated if empty)")
+    title: str = Field(..., description="Timeline title in Vietnamese")
+    events: List[TimelineEvent] = Field(..., description="Chronologically sorted events")
+
+
+class TimelineQueryRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=2000)
+    context: Optional[str] = Field(None, max_length=500)
+    current_snapshot: Optional[TimelineSnapshot] = None
+    recent_exchanges: List[dict] = Field(default_factory=list)
+
+
+class TimelineQueryResponse(BaseModel):
+    answer: str
+    timeline: TimelineSnapshot
+    chunks_used: int
+    entities: List[str] = []
+    graph_nodes: int = 0
 
 
 # ── Health ─────────────────────────────────────────────────────────────────────
