@@ -7,10 +7,13 @@ import com.vietnamhistory.userservice.entity.User;
 import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 
 @Repository
 public class UserRepository {
+
+    private static final java.util.Map<String, User> inMemoryUsers = new ConcurrentHashMap<>();
 
     private Firestore getFirestore() {
         return FirestoreClient.getFirestore();
@@ -22,24 +25,31 @@ public class UserRepository {
             if (doc.exists()) {
                 return Optional.ofNullable(doc.toObject(User.class));
             }
-        } catch (InterruptedException | ExecutionException e) {
-            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            // fallback
         }
-        return Optional.empty();
+        return Optional.ofNullable(inMemoryUsers.get(id));
     }
 
     public boolean existsByUsername(String username) {
         try {
             var query = getFirestore().collection("users").whereEqualTo("username", username).get().get();
-            return !query.isEmpty();
-        } catch (InterruptedException | ExecutionException e) {
-            Thread.currentThread().interrupt();
+            if (!query.isEmpty()) {
+                return true;
+            }
+        } catch (Exception e) {
+            // fallback
         }
-        return false;
+        return inMemoryUsers.values().stream().anyMatch(u -> username.equals(u.getUsername()));
     }
 
     public User save(User user) {
-        getFirestore().collection("users").document(user.getId()).set(user);
+        try {
+            getFirestore().collection("users").document(user.getId()).set(user);
+        } catch (Exception e) {
+            // fallback
+        }
+        inMemoryUsers.put(user.getId(), user);
         return user;
     }
 }

@@ -4,7 +4,7 @@ services:
 
   ai-service:
     build:
-      context: .                              
+      context: .
       dockerfile: services/ai-service/Dockerfile
     ports:
       - "8001:8001"
@@ -15,7 +15,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GROQ_API_KEY=${GROQ_API_KEY}
     volumes:
-      - ./data:/app/data  # mount data folder cho embeddings cache
+      - ./data:/app/data # mount data folder cho embeddings cache
     restart: unless-stopped
 
   user-service:
@@ -23,7 +23,7 @@ services:
     ports:
       - "8081:8081"
     environment:
-      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/firebase.json
     volumes:
       - ./firebase.json:/app/firebase.json:ro
     restart: unless-stopped
@@ -33,7 +33,7 @@ services:
     ports:
       - "8082:8082"
     environment:
-      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/firebase.json
       - AI_SERVICE_URL=${AI_SERVICE_URL}
     volumes:
       - ./firebase.json:/app/firebase.json:ro
@@ -51,7 +51,7 @@ services:
       - ./firebase.json:/app/firebase.json:ro
     restart: unless-stopped
     environment:
-      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/firebase.json
       - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}
       - USER_SERVICE_URL=${USER_SERVICE_URL}
       - CHAT_SERVICE_URL=${CHAT_SERVICE_URL}
@@ -59,7 +59,7 @@ services:
 
   frontend:
     build:
-      context: ../vietnam_history_discovery_FE
+      context: ../vietnam_hitory_discovery_FE
       dockerfile: Dockerfile
       args:
         - VITE_FIREBASE_API_KEY=${VITE_FIREBASE_API_KEY}

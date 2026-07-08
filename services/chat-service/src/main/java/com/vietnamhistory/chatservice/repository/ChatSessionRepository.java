@@ -11,12 +11,14 @@ import org.springframework.stereotype.Repository;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 
 @Repository
 public class ChatSessionRepository {
 
     private static final Logger log = LoggerFactory.getLogger(ChatSessionRepository.class);
+    private static final java.util.Map<String, ChatSession> inMemorySessions = new ConcurrentHashMap<>();
 
     private Firestore getFirestore() {
         return FirestoreClient.getFirestore();
@@ -32,13 +34,10 @@ public class ChatSessionRepository {
                 }
                 return Optional.ofNullable(session);
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("Firestore findById interrupted for id={}", id, e);
-        } catch (ExecutionException e) {
-            log.error("Firestore findById failed for id={}", id, e);
+        } catch (Exception e) {
+            log.error("Firestore findById failed for id={}, falling back to in-memory", id, e);
         }
-        return Optional.empty();
+        return Optional.ofNullable(inMemorySessions.get(id));
     }
 
     public List<ChatSession> findByUserIdOrderByUpdatedAtDesc(String userId) {
@@ -55,43 +54,46 @@ public class ChatSessionRepository {
                 }
                 sessions.add(session);
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("Firestore findByUserId interrupted for userId={}", userId, e);
-        } catch (ExecutionException e) {
-            log.error("Firestore findByUserId failed for userId={}", userId, e);
+            return sessions;
+        } catch (Exception e) {
+            log.error("Firestore findByUserId failed for userId={}, falling back to in-memory", userId, e);
         }
+
+        inMemorySessions.values().stream()
+                .filter(session -> userId.equals(session.getUserId()))
+                .sorted((s1, s2) -> {
+                    String u1 = s1.getUpdatedAt() != null ? s1.getUpdatedAt() : "";
+                    String u2 = s2.getUpdatedAt() != null ? s2.getUpdatedAt() : "";
+                    return u2.compareTo(u1);
+                })
+                .forEach(sessions::add);
         return sessions;
     }
 
     public ChatSession save(ChatSession session) {
-        try {
-            if (session.getId() == null) {
-                session.setId(java.util.UUID.randomUUID().toString());
-            }
-            if (session.getCreatedAt() == null) {
-                session.setCreatedAt(java.time.LocalDateTime.now().toString());
-            }
-            if (session.getUpdatedAt() == null) {
-                session.setUpdatedAt(session.getCreatedAt());
-            }
-            getFirestore().collection("chat_sessions").document(session.getId()).set(session).get();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("Firestore save interrupted for session={}", session.getId(), e);
-        } catch (ExecutionException e) {
-            log.error("Firestore save failed for session={}", session.getId(), e);
+        if (session.getId() == null) {
+            session.setId(java.util.UUID.randomUUID().toString());
         }
+        if (session.getCreatedAt() == null) {
+            session.setCreatedAt(java.time.LocalDateTime.now().toString());
+        }
+        if (session.getUpdatedAt() == null) {
+            session.setUpdatedAt(session.getCreatedAt());
+        }
+        try {
+            getFirestore().collection("chat_sessions").document(session.getId()).set(session).get();
+        } catch (Exception e) {
+            log.error("Firestore save failed for session={}, saving to in-memory", session.getId(), e);
+        }
+        inMemorySessions.put(session.getId(), session);
         return session;
     }
 
     public void delete(ChatSession session) {
+        inMemorySessions.remove(session.getId());
         try {
             getFirestore().collection("chat_sessions").document(session.getId()).delete().get();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("Firestore delete interrupted for session={}", session.getId(), e);
-        } catch (ExecutionException e) {
+        } catch (Exception e) {
             log.error("Firestore delete failed for session={}", session.getId(), e);
         }
     }

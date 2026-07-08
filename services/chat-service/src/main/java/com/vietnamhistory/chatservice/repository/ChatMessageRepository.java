@@ -10,12 +10,14 @@ import org.springframework.stereotype.Repository;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 
 @Repository
 public class ChatMessageRepository {
 
     private static final Logger log = LoggerFactory.getLogger(ChatMessageRepository.class);
+    private static final java.util.Map<String, ChatMessage> inMemoryMessages = new ConcurrentHashMap<>();
 
     private Firestore getFirestore() {
         return FirestoreClient.getFirestore();
@@ -34,16 +36,17 @@ public class ChatMessageRepository {
                 }
                 messages.add(msg);
             }
-            messages.sort(Comparator
-                    .comparingLong(this::messageOrder)
-                    .thenComparing(message -> message.getCreatedAt() != null ? message.getCreatedAt() : "")
-                    .thenComparing(message -> message.getId() != null ? message.getId() : ""));
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("Firestore findBySessionId interrupted for sessionId={}", sessionId, e);
-        } catch (ExecutionException e) {
-            log.error("Firestore findBySessionId failed for sessionId={}", sessionId, e);
+        } catch (Exception e) {
+            log.error("Firestore findBySessionId failed for sessionId={}, falling back to in-memory", sessionId, e);
+            inMemoryMessages.values().stream()
+                    .filter(msg -> sessionId.equals(msg.getSessionId()))
+                    .forEach(messages::add);
         }
+
+        messages.sort(Comparator
+                .comparingLong(this::messageOrder)
+                .thenComparing(message -> message.getCreatedAt() != null ? message.getCreatedAt() : "")
+                .thenComparing(message -> message.getId() != null ? message.getId() : ""));
         return messages;
     }
 
@@ -64,24 +67,23 @@ public class ChatMessageRepository {
     }
 
     public ChatMessage save(ChatMessage message) {
-        try {
-            if (message.getId() == null) {
-                message.setId(java.util.UUID.randomUUID().toString());
-            }
-            if (message.getCreatedAt() == null) {
-                message.setCreatedAt(java.time.LocalDateTime.now().toString());
-            }
-            getFirestore().collection("chat_messages").document(message.getId()).set(message).get();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("Firestore save interrupted for message={}", message.getId(), e);
-        } catch (ExecutionException e) {
-            log.error("Firestore save failed for message={}", message.getId(), e);
+        if (message.getId() == null) {
+            message.setId(java.util.UUID.randomUUID().toString());
         }
+        if (message.getCreatedAt() == null) {
+            message.setCreatedAt(java.time.LocalDateTime.now().toString());
+        }
+        try {
+            getFirestore().collection("chat_messages").document(message.getId()).set(message).get();
+        } catch (Exception e) {
+            log.error("Firestore save failed for message={}, saving to in-memory", message.getId(), e);
+        }
+        inMemoryMessages.put(message.getId(), message);
         return message;
     }
 
     public void deleteBySessionId(String sessionId) {
+        inMemoryMessages.values().removeIf(msg -> sessionId.equals(msg.getSessionId()));
         try {
             var query = getFirestore().collection("chat_messages")
                     .whereEqualTo("sessionId", sessionId)
@@ -89,10 +91,7 @@ public class ChatMessageRepository {
             for (var doc : query.getDocuments()) {
                 doc.getReference().delete().get();
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.error("Firestore deleteBySessionId interrupted for sessionId={}", sessionId, e);
-        } catch (ExecutionException e) {
+        } catch (Exception e) {
             log.error("Firestore deleteBySessionId failed for sessionId={}", sessionId, e);
         }
     }

@@ -551,11 +551,35 @@ def build_context(
 
 class ClaudeGenerator:
     def __init__(self):
-        from groq import Groq
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            raise ValueError("Thiếu GROQ_API_KEY trong .env")
-        self.client = Groq(api_key=api_key)
+        openai_base_url = os.getenv("OPENAI_BASE_URL")
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        openai_model = os.getenv("OPENAI_MODEL")
+
+        self.openrouter_client = None
+        self.groq_client = None
+
+        if openai_base_url and "openrouter.ai" in openai_base_url and openai_api_key:
+            from openai import OpenAI
+            print(f"🔌 Initializing OpenRouter client with model {openai_model or 'google/gemini-2.5-flash'}")
+            self.openrouter_client = OpenAI(
+                base_url=openai_base_url,
+                api_key=openai_api_key,
+                default_headers={
+                    "HTTP-Referer": "https://github.com/Vietnam-History-Discovery",
+                    "X-Title": "Vietnam History Discovery RAG"
+                }
+            )
+            self.openrouter_model = openai_model or "google/gemini-2.5-flash"
+
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        if groq_api_key:
+            from groq import Groq
+            print("🔌 Initializing Groq client")
+            self.groq_client = Groq(api_key=groq_api_key)
+            self.groq_model = "llama-3.3-70b-versatile"
+
+        if not self.openrouter_client and not self.groq_client:
+            raise ValueError("Thiếu cả cấu hình OpenRouter và Groq trong .env")
 
     def generate(self, query: str, context: str) -> str:
         prompt = f"""Bạn là chuyên gia lịch sử Việt Nam. Hãy trả lời câu hỏi của người dùng.
@@ -569,13 +593,39 @@ Câu hỏi: {query}
 
 Trả lời bằng tiếng Việt, súc tích và chính xác:"""
 
-        response = self.client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=1024,
-            temperature=0.1,
-        )
-        return response.choices[0].message.content
+        # Try OpenRouter first if configured
+        if self.openrouter_client:
+            try:
+                model = self.openrouter_model
+                if model.startswith("gpt/"):
+                    model = "openai/" + model[4:]
+                print(f"🤖 Attempting query with OpenRouter ({model})...")
+                response = self.openrouter_client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=1024,
+                    temperature=0.1,
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                print(f"⚠️ OpenRouter request failed: {e}")
+                if self.groq_client:
+                    print("🔄 Falling back to Groq...")
+                else:
+                    raise e
+
+        # Fallback to Groq
+        if self.groq_client:
+            print(f"🤖 Querying with Groq ({self.groq_model})...")
+            response = self.groq_client.chat.completions.create(
+                model=self.groq_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1024,
+                temperature=0.1,
+            )
+            return response.choices[0].message.content
+
+        raise RuntimeError("Không có LLM client hoạt động.")
 
 
 # ─── Main GraphRAG Pipeline ───────────────────────────────────────────────────
