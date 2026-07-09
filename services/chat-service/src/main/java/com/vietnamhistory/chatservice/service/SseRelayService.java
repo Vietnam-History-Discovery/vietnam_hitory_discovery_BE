@@ -6,10 +6,11 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.function.BiConsumer;
-import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -26,10 +27,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
  * Generic SSE relay — has no knowledge of ChatMessage, sessions, or any
  * specific mode (chat/timeline/future modes). It opens a streaming POST to
  * any URL that responds with an SSE stream, forwards every frame verbatim to
- * an SseEmitter, accumulates "delta" event text, and hands the caller the
- * accumulated text once a "done" frame arrives. A future mode reuses this
- * unchanged — it only needs to supply its own URL, request body, and what to
- * do with the finished text.
+ * an SseEmitter, accumulates "delta" event text, captures any other named
+ * event's raw data (e.g. "meta", "timeline") into a map, and hands the caller
+ * both once a "done" frame arrives. A future mode reuses this unchanged — it
+ * only needs to supply its own URL, request body, and what to do with the
+ * finished text/captured events.
  */
 @Service
 public class SseRelayService {
@@ -48,12 +50,13 @@ public class SseRelayService {
     public SseEmitter relay(
             String url,
             Object requestBody,
-            Consumer<String> onComplete,
+            BiConsumer<String, Map<String, String>> onComplete,
             BiConsumer<Throwable, SseEmitter> onError) {
         SseEmitter emitter = new SseEmitter(0L);
 
         sseExecutor.execute(() -> {
             StringBuilder accumulated = new StringBuilder();
+            Map<String, String> capturedEvents = new HashMap<>();
             try {
                 String jsonBody = objectMapper.writeValueAsString(requestBody);
                 log.info("SSE relay POST {} body={}", url, jsonBody);
@@ -97,6 +100,8 @@ public class SseRelayService {
                                 } else if ("error".equals(eventName)) {
                                     emitter.complete();
                                     return;
+                                } else {
+                                    capturedEvents.put(eventName, data);
                                 }
                             }
                             eventName = null;
@@ -114,7 +119,7 @@ public class SseRelayService {
                 }
 
                 emitter.complete();
-                onComplete.accept(accumulated.toString());
+                onComplete.accept(accumulated.toString(), capturedEvents);
             } catch (Exception e) {
                 log.error("SSE relay failed for {}: {}", url, e.getMessage());
                 onError.accept(e, emitter);

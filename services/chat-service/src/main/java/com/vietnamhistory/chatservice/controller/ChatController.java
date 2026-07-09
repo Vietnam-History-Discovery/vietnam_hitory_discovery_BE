@@ -79,12 +79,12 @@ public class ChatController {
         return chatService.askStream(extractUserId(httpRequest), id, request);
     }
 
-    @PostMapping("/sessions/{id}/timeline")
-    public ResponseEntity<TimelineResponse> askTimeline(
+    @PostMapping(value = "/sessions/{id}/timeline/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter askTimelineStream(
             @PathVariable String id,
             @Valid @RequestBody TimelineRequest request,
             HttpServletRequest httpRequest) {
-        return ResponseEntity.ok(chatService.askTimeline(extractUserId(httpRequest), id, request));
+        return chatService.askTimelineStream(extractUserId(httpRequest), id, request);
     }
 
     @GetMapping("/sessions/{id}/messages")

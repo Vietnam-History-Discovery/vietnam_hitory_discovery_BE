@@ -29,9 +29,7 @@ import com.vietnamhistory.chatservice.dto.SessionDto;
 import com.vietnamhistory.chatservice.dto.SessionWithMessagesDto;
 import com.vietnamhistory.chatservice.dto.TimelineAiRequest;
 import com.vietnamhistory.chatservice.dto.TimelineAiRequest.RecentExchange;
-import com.vietnamhistory.chatservice.dto.TimelineAiResponse;
 import com.vietnamhistory.chatservice.dto.TimelineRequest;
-import com.vietnamhistory.chatservice.dto.TimelineResponse;
 import com.vietnamhistory.chatservice.dto.TimelineSnapshotDto;
 import com.vietnamhistory.chatservice.entity.ChatMessage;
 import com.vietnamhistory.chatservice.entity.ChatSession;
@@ -157,7 +155,7 @@ public class ChatService {
         return sseRelay.relay(
                 aiServiceUrl + "/query/stream",
                 new AiQueryRequest(aiQuestion, AI_TOP_K),
-                accumulatedAnswer -> {
+                (accumulatedAnswer, capturedEvents) -> {
                     ChatMessage assistantMsg = new ChatMessage();
                     assistantMsg.setSessionId(sessionId);
                     assistantMsg.setRole(MessageRole.ASSISTANT);
@@ -208,7 +206,7 @@ public class ChatService {
         }
     }
 
-    public TimelineResponse askTimeline(String userId, String sessionId, TimelineRequest request) {
+    public SseEmitter askTimelineStream(String userId, String sessionId, TimelineRequest request) {
         ChatSession session = findSessionForUser(userId, sessionId);
 
         long nextSequence = messageRepository.nextSequence(sessionId);
@@ -224,6 +222,51 @@ public class ChatService {
         session.setUpdatedAt(LocalDateTime.now().toString());
         sessionRepository.save(session);
 
+        TimelineHistoryContext historyContext = buildTimelineHistoryContext(sessionId);
+
+        String aiQuestion = (request.context() != null && !request.context().isBlank())
+                ? "[" + request.context() + "] " + request.question()
+                : request.question();
+
+        return sseRelay.relay(
+                aiServiceUrl + "/query/timeline/stream",
+                new TimelineAiRequest(aiQuestion, request.context(), historyContext.currentSnapshot(), historyContext.recentExchanges()),
+                (accumulatedAnswer, capturedEvents) -> {
+                    String timelineRaw = capturedEvents.get("timeline");
+                    String content = accumulatedAnswer;
+                    String timelineJson = null;
+
+                    if (timelineRaw != null) {
+                        try {
+                            TimelineSnapshotDto snapshot = objectMapper.readValue(timelineRaw, TimelineSnapshotDto.class);
+                            timelineJson = objectMapper.writeValueAsString(snapshot);
+                        } catch (JsonProcessingException e) {
+                            log.warn("Failed to parse/serialize streamed timeline snapshot: {}", e.getMessage());
+                        }
+                    }
+
+                    ChatMessage assistantMsg = new ChatMessage();
+                    assistantMsg.setSessionId(sessionId);
+                    assistantMsg.setRole(MessageRole.ASSISTANT);
+                    assistantMsg.setContent(content);
+                    assistantMsg.setMessageType(MessageType.TIMELINE);
+                    assistantMsg.setTimeline(timelineJson);
+                    assistantMsg.setSequence(nextSequence + 1);
+                    messageRepository.save(assistantMsg);
+
+                    session.setUpdatedAt(LocalDateTime.now().toString());
+                    sessionRepository.save(session);
+                },
+                (err, emitter) -> {
+                    log.error("Timeline stream failed for session {}: {}", sessionId, err.getMessage());
+                    emitter.completeWithError(err);
+                });
+    }
+
+    private record TimelineHistoryContext(TimelineSnapshotDto currentSnapshot, List<RecentExchange> recentExchanges) {
+    }
+
+    private TimelineHistoryContext buildTimelineHistoryContext(String sessionId) {
         List<ChatMessage> recentMessages = messageRepository.findBySessionIdOrderByCreatedAtAsc(sessionId);
         TimelineSnapshotDto currentSnapshot = null;
         List<RecentExchange> recentExchanges = new ArrayList<>();
@@ -256,69 +299,7 @@ public class ChatService {
             }
         }
 
-        String aiQuestion = (request.context() != null && !request.context().isBlank())
-                ? "[" + request.context() + "] " + request.question()
-                : request.question();
-
-        TimelineAiResponse aiResponse = callAiTimelineService(aiQuestion, request.context(), currentSnapshot, recentExchanges);
-
-        String timelineJson = null;
-        if (aiResponse.timeline() != null) {
-            try {
-                timelineJson = objectMapper.writeValueAsString(aiResponse.timeline());
-            } catch (JsonProcessingException e) {
-                log.warn("Failed to serialize timeline snapshot: {}", e.getMessage());
-            }
-        }
-
-        ChatMessage assistantMsg = new ChatMessage();
-        assistantMsg.setSessionId(sessionId);
-        assistantMsg.setRole(MessageRole.ASSISTANT);
-        assistantMsg.setContent(aiResponse.answer());
-        assistantMsg.setMessageType(MessageType.TIMELINE);
-        assistantMsg.setTimeline(timelineJson);
-        assistantMsg.setSequence(nextSequence + 1);
-        messageRepository.save(assistantMsg);
-
-        session.setUpdatedAt(LocalDateTime.now().toString());
-        sessionRepository.save(session);
-
-        return new TimelineResponse(
-                aiResponse.answer(),
-                aiResponse.timeline(),
-                aiResponse.chunksUsed(),
-                aiResponse.entities(),
-                aiResponse.graphNodes()
-        );
-    }
-
-    private TimelineAiResponse callAiTimelineService(
-            String question, String context,
-            TimelineSnapshotDto currentSnapshot,
-            List<RecentExchange> recentExchanges) {
-        try {
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
-            headers.setAccept(List.of(MediaType.APPLICATION_JSON));
-
-            HttpEntity<TimelineAiRequest> entity = new HttpEntity<>(
-                    new TimelineAiRequest(question, context, currentSnapshot, recentExchanges), headers);
-
-            TimelineAiResponse response = aiRestTemplate.postForObject(
-                    "/query/timeline", entity, TimelineAiResponse.class);
-
-            if (response == null) {
-                throw new RuntimeException("AI service returned empty response for timeline");
-            }
-            return response;
-
-        } catch (HttpStatusCodeException e) {
-            log.error("AI timeline service HTTP error {}: {}", e.getStatusCode(), e.getResponseBodyAsString());
-            throw new RuntimeException("AI service error: " + e.getStatusCode());
-        } catch (Exception e) {
-            log.error("AI timeline service call failed: {}", e.getMessage());
-            throw new RuntimeException("Failed to reach AI service: " + e.getMessage());
-        }
+        return new TimelineHistoryContext(currentSnapshot, recentExchanges);
     }
 
     private ChatSession findSessionForUser(String userId, String sessionId) {

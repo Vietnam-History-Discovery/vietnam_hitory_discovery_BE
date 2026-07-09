@@ -139,14 +139,6 @@ class TimelineQueryRequest(BaseModel):
     recent_exchanges: List[dict] = Field(default_factory=list)
 
 
-class TimelineQueryResponse(BaseModel):
-    answer: str
-    timeline: Optional[TimelineSnapshot] = None
-    chunks_used: int
-    entities: List[str] = []
-    graph_nodes: int = 0
-
-
 # ── Health ─────────────────────────────────────────────────────────────────────
 
 class HealthResponse(BaseModel):

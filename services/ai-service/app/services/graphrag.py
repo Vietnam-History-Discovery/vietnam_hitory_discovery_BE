@@ -7,9 +7,12 @@ import json
 import logging
 import os
 import uuid
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from pydantic import ValidationError
+
+if TYPE_CHECKING:
+    from app.models import TimelineSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +84,7 @@ def chunks_loaded() -> int:
 def _retrieve(question: str, context_override: Optional[str] = None, top_k: int = 10) -> dict:
     """Shared retrieval pipeline: dynasty-prefix stripping → entity lookup →
     vector search → graph expansion → context string. Used by both
-    query_graph and query_timeline so the two stay in sync."""
+    query_graph and query_timeline_stream so the two stay in sync."""
     from graphrag_retriever import build_context, extract_entity  # type: ignore[import]
 
     # Strip context prefix [dynasty_name] nếu có
@@ -246,11 +249,16 @@ def query_naive(question: str, top_k: int = 10) -> dict:
 _TIMELINE_MODEL = os.getenv("TIMELINE_MODEL", "openai/gpt-oss-120b")
 _TIMELINE_CONTEXT_CHAR_LIMIT = int(os.getenv("TIMELINE_CONTEXT_CHAR_LIMIT", "4000"))
 
-_TIMELINE_JSON_SCHEMA = {
+_TIMELINE_FALLBACK_ANSWER = (
+    "Xin lỗi, tôi không thể tạo dòng thời gian cho câu hỏi này. Bạn có thể hỏi tôi về "
+    "những chủ đề liên quan đến lịch sử, sự kiện và dòng thời gian Việt Nam, ví dụ như "
+    "nhà Nguyễn, nhà Trần, Hai Bà Trưng, thời kỳ Bắc thuộc, v.v."
+)
+
+_TIMELINE_EVENTS_JSON_SCHEMA = {
     "type": "object",
     "properties": {
         "title": {"type": "string"},
-        "answer": {"type": "string"},
         "events": {
             "type": "array",
             "items": {
@@ -272,57 +280,58 @@ _TIMELINE_JSON_SCHEMA = {
             },
         },
     },
-    "required": ["title", "answer", "events"],
+    "required": ["title", "events"],
     "additionalProperties": False,
 }
 
-_TIMELINE_SYSTEM_PROMPT = """Bạn là chuyên gia lịch sử Việt Nam. Dựa vào nội dung lịch sử được cung cấp, hãy tạo một dòng thời gian (timeline) gồm các sự kiện chính.
+_TIMELINE_EVENTS_SYSTEM_PROMPT = """Bạn là chuyên gia lịch sử Việt Nam. Dựa vào nội dung lịch sử được cung cấp, hãy tạo một dòng thời gian (timeline) gồm các sự kiện chính.
 
 Yêu cầu:
-- Trả về JSON đúng schema với title (tiêu đề timeline), answer (câu trả lời) và events (mảng sự kiện)
-- answer là một câu trả lời ngắn gọn, tự nhiên bằng tiếng Việt, trả lời trực tiếp câu hỏi của người dùng và có thể nêu vài điểm nổi bật của dòng thời gian. Đây KHÔNG phải là tiêu đề, mà là một câu trả lời hội thoại thực sự.
+- Trả về JSON đúng schema với title (tiêu đề timeline) và events (mảng sự kiện)
 - Mỗi sự kiện có: id (duy nhất), dateLabel (nhãn hiển thị, VD: "Thế kỷ X", "Năm 179 TCN", "Khoảng năm 40"), start_year (năm bắt đầu bằng số, BCE là số âm), end_year (năm kết thúc bằng số, có thể null), title (tiêu đề), description (mô tả), related_entities (các thực thể liên quan)
 - Sắp xếp sự kiện theo thứ tự thời gian tăng dần (start_year nếu có, nếu không thì dùng dateLabel)
 - LUÔN tạo ít nhất 3-5 sự kiện dựa vào kiến thức lịch sử của bạn khi câu hỏi liên quan đến lịch sử Việt Nam.
-- Nếu câu hỏi KHÔNG liên quan đến lịch sử Việt Nam, hoặc bạn không có đủ thông tin để tạo dòng thời gian, hãy trả về events là mảng rỗng ([]), và answer/title có thể để trống — hệ thống sẽ tự thay thế bằng một câu trả lời phù hợp cho người dùng trong trường hợp này.
+- Nếu câu hỏi KHÔNG liên quan đến lịch sử Việt Nam, hoặc bạn không có đủ thông tin để tạo dòng thời gian, hãy trả về events là mảng rỗng ([]), và title có thể để trống — hệ thống sẽ tự thay thế bằng một câu trả lời phù hợp cho người dùng trong trường hợp này.
 - Nội dung bằng tiếng Việt
 - Tối đa 20 sự kiện"""
 
-_TIMELINE_FALLBACK_ANSWER = (
-    "Xin lỗi, tôi không thể tạo dòng thời gian cho câu hỏi này. Bạn có thể hỏi tôi về "
-    "những chủ đề liên quan đến lịch sử, sự kiện và dòng thời gian Việt Nam, ví dụ như "
-    "nhà Nguyễn, nhà Trần, Hai Bà Trưng, thời kỳ Bắc thuộc, v.v."
-)
+_TIMELINE_ANSWER_SYSTEM_PROMPT = """Bạn là chuyên gia lịch sử Việt Nam. Bạn vừa tạo xong một dòng thời gian (timeline) cho người dùng và giờ cần viết một câu trả lời hội thoại ngắn gọn, tự nhiên bằng tiếng Việt.
+
+Yêu cầu:
+- Trả lời trực tiếp câu hỏi của người dùng và có thể nêu vài điểm nổi bật của dòng thời gian vừa tạo
+- Đây KHÔNG phải là tiêu đề, mà là một câu trả lời hội thoại thực sự, súc tích
+- Nội dung bằng tiếng Việt"""
 
 
-def _timeline_fallback(chunks: list, graph_data: dict) -> dict:
-    """Response used when the model can't produce a usable timeline (off-topic
-    question, malformed/empty output) — a normal chat-style answer instead of
-    an error, so the UI doesn't have to treat it as a failure."""
-    entities = graph_data.get("entities", [])
-    graph_nodes_val = (
-        len(graph_data.get("nodes", []))
-        or len(graph_data.get("graph_context", []))
-        or len(entities)
+def _timeline_answer_prompt(
+    question: str,
+    context: str,
+    snapshot: TimelineSnapshot,
+) -> str:
+    event_lines = "\n".join(
+        f"- {e.dateLabel}: {e.title}" for e in snapshot.events
     )
-    return {
-        "answer": _TIMELINE_FALLBACK_ANSWER,
-        "timeline": None,
-        "chunks_used": len(chunks),
-        "entities": entities if isinstance(entities, list) else list(entities),
-        "graph_nodes": graph_nodes_val,
-    }
+    return (
+        f"Câu hỏi: {question}\n\n"
+        f"Thông tin lịch sử:\n{context}\n\n"
+        f"Dòng thời gian vừa tạo — {snapshot.title}:\n{event_lines}"
+    )
 
 
-def query_timeline(
+def query_timeline_stream(
     question: str,
     context: Optional[str] = None,
     current_snapshot: Optional[dict] = None,
     recent_exchanges: Optional[list[dict]] = None,
-) -> dict:
-    """Generate a timeline snapshot using GraphRAG retrieval + Groq JSON Schema."""
+):
+    """Generate a timeline snapshot using GraphRAG retrieval + Groq JSON Schema,
+    streamed over SSE. Yields dicts of {"event": str, "data": dict}:
+    meta -> timeline -> delta* -> done (or meta -> delta (fallback) -> done
+    when the question isn't a usable timeline topic)."""
     if not _ready:
         raise RuntimeError("GraphRAG not initialised")
+
+    from app.models import TimelineSnapshot
 
     retrieval = _retrieve(question, context_override=context, top_k=10)
     clean_question = retrieval["clean_question"]
@@ -331,11 +340,23 @@ def query_timeline(
     chunks = retrieval["chunks"]
 
     if len(context_str) > _TIMELINE_CONTEXT_CHAR_LIMIT:
-        logger.info(
-            "Timeline context truncated: %d -> %d chars",
-            len(context_str), _TIMELINE_CONTEXT_CHAR_LIMIT,
-        )
         context_str = context_str[:_TIMELINE_CONTEXT_CHAR_LIMIT] + "\n… (nội dung đã rút gọn)"
+
+    entities = graph_data.get("entities", [])
+    graph_nodes_val = (
+        len(graph_data.get("nodes", []))
+        or len(graph_data.get("graph_context", []))
+        or len(entities)
+    )
+
+    yield {
+        "event": "meta",
+        "data": {
+            "chunks_used": len(chunks),
+            "entities": entities if isinstance(entities, list) else list(entities),
+            "graph_nodes": graph_nodes_val,
+        },
+    }
 
     user_prompt_parts = [f"Câu hỏi: {clean_question}\n\nThông tin lịch sử:\n{context_str}"]
 
@@ -359,50 +380,45 @@ def query_timeline(
 
     try:
         raw = _llm.generate_structured(
-            system_prompt=_TIMELINE_SYSTEM_PROMPT,
+            system_prompt=_TIMELINE_EVENTS_SYSTEM_PROMPT,
             user_prompt=user_prompt,
-            schema=_TIMELINE_JSON_SCHEMA,
-            schema_name="timeline_snapshot",
+            schema=_TIMELINE_EVENTS_JSON_SCHEMA,
+            schema_name="timeline_events",
             model=_TIMELINE_MODEL,
         )
-
         timeline_data = json.loads(raw)
-        answer_text = (timeline_data.pop("answer", "") or "").strip()
-        from app.models import TimelineSnapshot
-
         snapshot = TimelineSnapshot(**timeline_data)
-
-        if not snapshot.events:
-            return _timeline_fallback(chunks, graph_data)
-
-        snapshot.events.sort(
-            key=lambda e: (
-                e.start_year if e.start_year is not None
-                else (e.end_year if e.end_year is not None else 9999)
-            )
-        )
-
-        if not snapshot.id:
-            snapshot.id = str(uuid.uuid4())
-
-        entities = graph_data.get("entities", [])
-        graph_nodes_val = (
-            len(graph_data.get("nodes", []))
-            or len(graph_data.get("graph_context", []))
-            or len(entities)
-        )
-
-        return {
-            "answer": answer_text or f"**{snapshot.title}** - {len(snapshot.events)} sự kiện lịch sử",
-            "timeline": snapshot.model_dump(),
-            "chunks_used": len(chunks),
-            "entities": entities if isinstance(entities, list) else list(entities),
-            "graph_nodes": graph_nodes_val,
-        }
-
     except (json.JSONDecodeError, ValidationError) as exc:
         logger.warning("Timeline generation produced unusable output, falling back: %s", exc)
-        return _timeline_fallback(chunks, graph_data)
+        yield {"event": "delta", "data": {"text": _TIMELINE_FALLBACK_ANSWER}}
+        yield {"event": "done", "data": {}}
+        return
     except Exception as exc:
         logger.error("Timeline generation failed: %s", exc)
         raise RuntimeError(f"Timeline generation failed: {exc}")
+
+    if not snapshot.events:
+        yield {"event": "delta", "data": {"text": _TIMELINE_FALLBACK_ANSWER}}
+        yield {"event": "done", "data": {}}
+        return
+
+    snapshot.events.sort(
+        key=lambda e: (
+            e.start_year if e.start_year is not None
+            else (e.end_year if e.end_year is not None else 9999)
+        )
+    )
+    if not snapshot.id:
+        snapshot.id = str(uuid.uuid4())
+
+    yield {"event": "timeline", "data": snapshot.model_dump()}
+
+    answer_prompt = _timeline_answer_prompt(clean_question, context_str, snapshot)
+    for delta in _llm.generate_answer_stream(
+        system_prompt=_TIMELINE_ANSWER_SYSTEM_PROMPT,
+        user_prompt=answer_prompt,
+        model=_TIMELINE_MODEL,
+    ):
+        yield {"event": "delta", "data": {"text": delta}}
+
+    yield {"event": "done", "data": {}}

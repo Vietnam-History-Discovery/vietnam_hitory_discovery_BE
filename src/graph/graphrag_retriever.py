@@ -593,6 +593,33 @@ Trả lời bằng tiếng Việt, súc tích và chính xác:"""
             if delta:
                 yield delta
 
+    def generate_answer_stream(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str,
+        max_tokens: int = 1024,
+        temperature: float = 0.1,
+    ):
+        """Yields text deltas for an arbitrary system/user prompt pair. Same
+        streaming shape as generate_stream() above, but parameterized instead
+        of hardcoded to the chat prompt/model, so other callers (e.g. timeline
+        generation) can reuse it."""
+        stream = self.client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=True,
+        )
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
+
     def generate_structured(
         self,
         system_prompt: str,
