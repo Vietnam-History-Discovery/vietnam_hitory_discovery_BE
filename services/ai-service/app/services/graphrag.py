@@ -192,6 +192,39 @@ def query_graph(question: str, top_k: int = 10) -> dict:
     }
 
 
+def query_graph_stream(question: str, top_k: int = 10):
+    """Streaming counterpart of query_graph: retrieval happens once up front
+    (not streamed), then generation is yielded as it arrives from Groq.
+    Yields dicts of {"event": str, "data": dict} for an SSE layer to format."""
+    if not _ready:
+        raise RuntimeError("GraphRAG not initialised")
+
+    retrieval = _retrieve(question, top_k=top_k)
+    context_str = retrieval["context_str"]
+
+    graph_data = retrieval["graph_data"]
+    entities: list = graph_data.get("entities", [])
+    graph_nodes = (
+        len(graph_data.get("nodes", []))
+        or len(graph_data.get("graph_context", []))
+        or len(entities)
+    )
+
+    yield {
+        "event": "meta",
+        "data": {
+            "chunks_used": len(retrieval["chunks"]),
+            "entities": entities if isinstance(entities, list) else list(entities),
+            "graph_nodes": graph_nodes,
+        },
+    }
+
+    for delta in _llm.generate_stream(retrieval["clean_question"], context_str):
+        yield {"event": "delta", "data": {"text": delta}}
+
+    yield {"event": "done", "data": {}}
+
+
 def query_naive(question: str, top_k: int = 10) -> dict:
     """Naive (vector-only) RAG query."""
     from evaluator import NaiveRAG  # type: ignore[import]

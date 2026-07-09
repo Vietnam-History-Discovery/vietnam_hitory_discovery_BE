@@ -557,8 +557,9 @@ class ClaudeGenerator:
             raise ValueError("Thiếu GROQ_API_KEY trong .env")
         self.client = Groq(api_key=api_key)
 
-    def generate(self, query: str, context: str) -> str:
-        prompt = f"""Bạn là chuyên gia lịch sử Việt Nam. Hãy trả lời câu hỏi của người dùng.
+    @staticmethod
+    def _chat_prompt(query: str, context: str) -> str:
+        return f"""Bạn là chuyên gia lịch sử Việt Nam. Hãy trả lời câu hỏi của người dùng.
 Bạn sẽ được cung cấp một số thông tin trích xuất từ tài liệu lịch sử (context). Hãy ưu tiên sử dụng thông tin từ context.
 Nếu context không có đủ thông tin, bạn có thể bổ sung bằng kiến thức lịch sử chuyên môn của mình để trả lời một cách đầy đủ và chính xác nhất.
 
@@ -569,13 +570,28 @@ Câu hỏi: {query}
 
 Trả lời bằng tiếng Việt, súc tích và chính xác:"""
 
+    def generate(self, query: str, context: str) -> str:
         response = self.client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": self._chat_prompt(query, context)}],
             max_tokens=1024,
             temperature=0.1,
         )
         return response.choices[0].message.content
+
+    def generate_stream(self, query: str, context: str):
+        """Yields text deltas as they arrive from Groq. Same prompt/model as generate()."""
+        stream = self.client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": self._chat_prompt(query, context)}],
+            max_tokens=1024,
+            temperature=0.1,
+            stream=True,
+        )
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
 
     def generate_structured(
         self,

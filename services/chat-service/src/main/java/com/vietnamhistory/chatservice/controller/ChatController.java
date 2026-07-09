@@ -7,9 +7,11 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 
@@ -67,6 +69,14 @@ public class ChatController {
             @Valid @RequestBody AskRequest request,
             HttpServletRequest httpRequest) {
         return ResponseEntity.ok(chatService.ask(extractUserId(httpRequest), id, request));
+    }
+
+    @PostMapping(value = "/sessions/{id}/ask/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter askStream(
+            @PathVariable String id,
+            @Valid @RequestBody AskRequest request,
+            HttpServletRequest httpRequest) {
+        return chatService.askStream(extractUserId(httpRequest), id, request);
     }
 
     @PostMapping("/sessions/{id}/timeline")

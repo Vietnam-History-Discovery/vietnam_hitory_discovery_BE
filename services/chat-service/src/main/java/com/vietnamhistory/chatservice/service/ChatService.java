@@ -8,12 +8,14 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -56,6 +58,12 @@ public class ChatService {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private SseRelayService sseRelay;
+
+    @Value("${ai.service.url}")
+    private String aiServiceUrl;
 
     public SessionDto createSession(String userId, CreateSessionRequest request) {
         String title = (request.title() != null && !request.title().isBlank())
@@ -126,6 +134,44 @@ public class ChatService {
         sessionRepository.save(session);
 
         return new AskResponse(aiResponse.answer(), aiResponse.chunksUsed(), aiResponse.entities(), aiResponse.graphNodes());
+    }
+
+    public SseEmitter askStream(String userId, String sessionId, AskRequest request) {
+        ChatSession session = findSessionForUser(userId, sessionId);
+
+        String aiQuestion = (request.context() != null && !request.context().isBlank())
+                ? "[" + request.context() + "] " + request.question()
+                : request.question();
+        long nextSequence = messageRepository.nextSequence(sessionId);
+
+        ChatMessage userMsg = new ChatMessage();
+        userMsg.setSessionId(sessionId);
+        userMsg.setRole(MessageRole.USER);
+        userMsg.setContent(request.question());
+        userMsg.setSequence(nextSequence);
+        messageRepository.save(userMsg);
+
+        session.setUpdatedAt(LocalDateTime.now().toString());
+        sessionRepository.save(session);
+
+        return sseRelay.relay(
+                aiServiceUrl + "/query/stream",
+                new AiQueryRequest(aiQuestion, AI_TOP_K),
+                accumulatedAnswer -> {
+                    ChatMessage assistantMsg = new ChatMessage();
+                    assistantMsg.setSessionId(sessionId);
+                    assistantMsg.setRole(MessageRole.ASSISTANT);
+                    assistantMsg.setContent(accumulatedAnswer);
+                    assistantMsg.setSequence(nextSequence + 1);
+                    messageRepository.save(assistantMsg);
+
+                    session.setUpdatedAt(LocalDateTime.now().toString());
+                    sessionRepository.save(session);
+                },
+                (err, emitter) -> {
+                    log.error("Chat stream failed for session {}: {}", sessionId, err.getMessage());
+                    emitter.completeWithError(err);
+                });
     }
 
     public List<MessageDto> getMessages(String userId, String sessionId) {

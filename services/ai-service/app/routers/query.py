@@ -8,6 +8,7 @@ from app.models import (
     TimelineQueryResponse,
 )
 from app.services import graphrag as graphrag_svc
+from app.services.sse import sse_response
 
 router = APIRouter(prefix="/query", tags=["query"])
 
@@ -22,6 +23,14 @@ async def query_graph(req: QueryRequest) -> QueryResponse:
         return QueryResponse(**result)
     except Exception as exc:
         raise HTTPException(500, str(exc)) from exc
+
+
+@router.post("/stream")
+async def query_graph_stream(req: QueryRequest):
+    """Streaming counterpart of POST /query — SSE frames: meta -> delta* -> done."""
+    if not graphrag_svc.is_ready():
+        raise HTTPException(503, "GraphRAG service is not ready yet")
+    return sse_response(graphrag_svc.query_graph_stream(req.question, top_k=req.top_k))
 
 
 @router.post("/naive", response_model=NaiveQueryResponse)
