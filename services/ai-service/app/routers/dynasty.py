@@ -38,9 +38,6 @@ def _get_driver():
         _driver = GraphDatabase.driver(uri, auth=(user, pwd))
         logger.info("Dynasty Neo4j driver initialised")
     return _driver
-        
-        
-    return _driver
 
 
 def close() -> None:
@@ -79,7 +76,8 @@ async def list_dynasties() -> DynastyListResponse:
                     d.key_figures AS key_figures,
                     d.key_events AS key_events,
                     d.start_year AS start_year
-            ORDER BY d.start_year""",
+            ORDER BY COALESCE(d.start_year, 9999)
+            LIMIT 50""",
         )
     except Exception as exc:
         raise HTTPException(503, f"Neo4j query failed: {exc}") from exc
@@ -101,6 +99,7 @@ async def list_dynasties() -> DynastyListResponse:
     return DynastyListResponse(total=len(dynasties), dynasties=dynasties)
 
 
+
 @router.get("/{name}", response_model=DynastyDetail)
 async def get_dynasty(name: str) -> DynastyDetail:
     """Return detail for one dynasty: related persons, events, places, sample chunks."""
@@ -115,20 +114,23 @@ async def get_dynasty(name: str) -> DynastyDetail:
             ),
             asyncio.to_thread(
                 _run,
-                "MATCH (p:Person)-[:CO_OCCURS_WITH]-(d:Dynasty {name: $name}) "
-                "RETURN p.name AS name ORDER BY COALESCE(p.mentions, 0) DESC LIMIT 10",
+                "MATCH (p:Person)-[:BELONGS_TO_DYNASTY]->(d:Dynasty {name: $name}) "
+                "RETURN p.name AS name "
+                "ORDER BY COALESCE(p.mentions, 0) DESC "
+                "LIMIT 10",
                 name=name,
             ),
             asyncio.to_thread(
                 _run,
-                "MATCH (e:Event)-[:CO_OCCURS_WITH]-(d:Dynasty {name: $name}) "
-                "RETURN e.name AS name LIMIT 10",
+                "MATCH (e:Event)-[:BELONGS_TO_DYNASTY]->(d:Dynasty {name: $name}) "
+                "RETURN e.name AS name "
+                "LIMIT 10",
                 name=name,
             ),
             asyncio.to_thread(
                 _run,
-                "MATCH (pl:Place)-[:CO_OCCURS_WITH]-(d:Dynasty {name: $name}) "
-                "RETURN pl.name AS name LIMIT 10",
+                "MATCH (pl:Place)-[r:CO_OCCURS_WITH]-(d:Dynasty {name: $name}) "
+                "RETURN pl.name AS name ORDER BY COALESCE(r.count, 0) DESC LIMIT 10",
                 name=name,
             ),
             asyncio.to_thread(

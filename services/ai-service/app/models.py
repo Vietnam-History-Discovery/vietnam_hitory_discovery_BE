@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 # ── Query ──────────────────────────────────────────────────────────────────────
 
 class QueryRequest(BaseModel):
-    question: str = Field(..., min_length=1, max_length=2000)
+    question: str = Field(..., min_length=1, max_length=50000)
     top_k: int = Field(10, ge=1, le=20)
 
 

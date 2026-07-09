@@ -123,7 +123,25 @@ class EmbeddingStore:
         self.model   = SentenceTransformer(model_name)
         self.chunks  : list[dict]       = []
         self.vectors : Optional[np.ndarray] = None
+        self._driver = None
         os.makedirs(EMBED_DIR, exist_ok=True)
+
+    def get_neo4j_driver(self):
+        if not hasattr(self, "_driver") or self._driver is None:
+            from neo4j import GraphDatabase
+            if NEO4J_URI:
+                self._driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+            else:
+                self._driver = None
+        return self._driver
+
+    def close(self):
+        if hasattr(self, "_driver") and self._driver is not None:
+            try:
+                self._driver.close()
+            except Exception:
+                pass
+            self._driver = None
 
     def build(self, chunks_path: Optional[str] = None):
         """Embed tất cả chunks, lưu cache."""
@@ -268,6 +286,44 @@ class EmbeddingStore:
         print("=" * 60)
 
         # --------------------------------------------------
+        # Step 3.5: Fetch Neo4j Query Expansion bridges and core figures
+        # --------------------------------------------------
+        bridge_keywords = []
+        dynasty_entities = []
+        driver = self.get_neo4j_driver()
+
+        if driver:
+            if dynasty_context:
+                try:
+                    with driver.session() as session:
+                        rows = session.run("""
+                            MATCH (d:Dynasty) WHERE toLower(d.name) = toLower($dynasty)
+                            MATCH (e)-[r:CO_OCCURS_WITH]-(d)
+                            RETURN coalesce(e.name, e.text) AS name
+                            ORDER BY coalesce(r.count, 0) DESC
+                            LIMIT 5
+                        """, dynasty=dynasty_context).data()
+                        dynasty_entities = [r["name"] for r in rows if r["name"]]
+                        print(f"🏛️  DYNASTY CORE ENTITIES: {dynasty_entities}")
+                except Exception as exc:
+                    print(f"[WARN] Failed to retrieve dynasty entities: {exc}")
+
+            if dynasty_context and entity:
+                try:
+                    with driver.session() as session:
+                        rows = session.run("""
+                            MATCH (p) WHERE toLower(coalesce(p.name, p.text)) = toLower($entity)
+                            MATCH (d:Dynasty) WHERE toLower(d.name) = toLower($dynasty)
+                            MATCH (p)-[:CO_OCCURS_WITH]-(bridge)-[:CO_OCCURS_WITH]-(d)
+                            RETURN DISTINCT coalesce(bridge.name, bridge.text) AS bridge_name
+                            LIMIT 5
+                        """, entity=entity, dynasty=dynasty_context).data()
+                        bridge_keywords = [r["bridge_name"] for r in rows if r["bridge_name"]]
+                        print(f"🔗 GRAPH BRIDGE KEYWORDS FOUND: {bridge_keywords}")
+                except Exception as exc:
+                    print(f"[WARN] Failed to retrieve graph bridges: {exc}")
+
+        # --------------------------------------------------
         # Step 4: Apply boosts on RRF scores
         # --------------------------------------------------
 
@@ -288,6 +344,17 @@ class EmbeddingStore:
                     ))
                 ):
                     rrf_scores[chunk_idx] = base + 8.0
+
+            # bridge keywords boost
+            for kw in bridge_keywords:
+                if kw.lower() in text_lower or kw.lower() in title_lower:
+                    rrf_scores[chunk_idx] = rrf_scores[chunk_idx] + 4.0
+                    print(f"BRIDGE HIT -> {kw} in {chunk.get('chunk_id')}")
+
+            # dynasty core entities boost
+            for kw in dynasty_entities:
+                if kw.lower() in text_lower or kw.lower() in title_lower:
+                    rrf_scores[chunk_idx] = rrf_scores[chunk_idx] + 2.0
 
             if entity and len(entity.split()) >= 2:
                 # entity phrase boost — precise match only

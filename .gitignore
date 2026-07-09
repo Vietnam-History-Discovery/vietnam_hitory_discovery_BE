@@ -1,9 +1,5 @@
 # Data files (too large)
-data/raw/
-data/parsed/
-data/embeddings/
-data/entities/
-data/evaluation/
+data/
 
 # Secrets
 .env
