@@ -141,7 +141,7 @@ class TimelineQueryRequest(BaseModel):
 
 class TimelineQueryResponse(BaseModel):
     answer: str
-    timeline: TimelineSnapshot
+    timeline: Optional[TimelineSnapshot] = None
     chunks_used: int
     entities: List[str] = []
     graph_nodes: int = 0

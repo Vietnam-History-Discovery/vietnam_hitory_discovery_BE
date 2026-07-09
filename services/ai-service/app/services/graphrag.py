@@ -9,6 +9,8 @@ import os
 import uuid
 from typing import Optional
 
+from pydantic import ValidationError
+
 logger = logging.getLogger(__name__)
 
 # Module-level singletons – populated by load()
@@ -209,11 +211,13 @@ def query_naive(question: str, top_k: int = 10) -> dict:
 # ── Timeline generation ──────────────────────────────────────────────────────
 
 _TIMELINE_MODEL = os.getenv("TIMELINE_MODEL", "openai/gpt-oss-120b")
+_TIMELINE_CONTEXT_CHAR_LIMIT = int(os.getenv("TIMELINE_CONTEXT_CHAR_LIMIT", "4000"))
 
 _TIMELINE_JSON_SCHEMA = {
     "type": "object",
     "properties": {
         "title": {"type": "string"},
+        "answer": {"type": "string"},
         "events": {
             "type": "array",
             "items": {
@@ -235,19 +239,46 @@ _TIMELINE_JSON_SCHEMA = {
             },
         },
     },
-    "required": ["title", "events"],
+    "required": ["title", "answer", "events"],
     "additionalProperties": False,
 }
 
 _TIMELINE_SYSTEM_PROMPT = """Bạn là chuyên gia lịch sử Việt Nam. Dựa vào nội dung lịch sử được cung cấp, hãy tạo một dòng thời gian (timeline) gồm các sự kiện chính.
 
 Yêu cầu:
-- Trả về JSON đúng schema với title (tiêu đề timeline) và events (mảng sự kiện)
+- Trả về JSON đúng schema với title (tiêu đề timeline), answer (câu trả lời) và events (mảng sự kiện)
+- answer là một câu trả lời ngắn gọn, tự nhiên bằng tiếng Việt, trả lời trực tiếp câu hỏi của người dùng và có thể nêu vài điểm nổi bật của dòng thời gian. Đây KHÔNG phải là tiêu đề, mà là một câu trả lời hội thoại thực sự.
 - Mỗi sự kiện có: id (duy nhất), dateLabel (nhãn hiển thị, VD: "Thế kỷ X", "Năm 179 TCN", "Khoảng năm 40"), start_year (năm bắt đầu bằng số, BCE là số âm), end_year (năm kết thúc bằng số, có thể null), title (tiêu đề), description (mô tả), related_entities (các thực thể liên quan)
 - Sắp xếp sự kiện theo thứ tự thời gian tăng dần (start_year nếu có, nếu không thì dùng dateLabel)
-- LUÔN tạo ít nhất 3-5 sự kiện dựa vào kiến thức lịch sử của bạn. Chỉ trả về events rỗng khi thực sự không biết gì về chủ đề này.
+- LUÔN tạo ít nhất 3-5 sự kiện dựa vào kiến thức lịch sử của bạn khi câu hỏi liên quan đến lịch sử Việt Nam.
+- Nếu câu hỏi KHÔNG liên quan đến lịch sử Việt Nam, hoặc bạn không có đủ thông tin để tạo dòng thời gian, hãy trả về events là mảng rỗng ([]), và answer/title có thể để trống — hệ thống sẽ tự thay thế bằng một câu trả lời phù hợp cho người dùng trong trường hợp này.
 - Nội dung bằng tiếng Việt
 - Tối đa 20 sự kiện"""
+
+_TIMELINE_FALLBACK_ANSWER = (
+    "Xin lỗi, tôi không thể tạo dòng thời gian cho câu hỏi này. Bạn có thể hỏi tôi về "
+    "những chủ đề liên quan đến lịch sử, sự kiện và dòng thời gian Việt Nam, ví dụ như "
+    "nhà Nguyễn, nhà Trần, Hai Bà Trưng, thời kỳ Bắc thuộc, v.v."
+)
+
+
+def _timeline_fallback(chunks: list, graph_data: dict) -> dict:
+    """Response used when the model can't produce a usable timeline (off-topic
+    question, malformed/empty output) — a normal chat-style answer instead of
+    an error, so the UI doesn't have to treat it as a failure."""
+    entities = graph_data.get("entities", [])
+    graph_nodes_val = (
+        len(graph_data.get("nodes", []))
+        or len(graph_data.get("graph_context", []))
+        or len(entities)
+    )
+    return {
+        "answer": _TIMELINE_FALLBACK_ANSWER,
+        "timeline": None,
+        "chunks_used": len(chunks),
+        "entities": entities if isinstance(entities, list) else list(entities),
+        "graph_nodes": graph_nodes_val,
+    }
 
 
 def query_timeline(
@@ -265,6 +296,13 @@ def query_timeline(
     context_str = retrieval["context_str"]
     graph_data = retrieval["graph_data"]
     chunks = retrieval["chunks"]
+
+    if len(context_str) > _TIMELINE_CONTEXT_CHAR_LIMIT:
+        logger.info(
+            "Timeline context truncated: %d -> %d chars",
+            len(context_str), _TIMELINE_CONTEXT_CHAR_LIMIT,
+        )
+        context_str = context_str[:_TIMELINE_CONTEXT_CHAR_LIMIT] + "\n… (nội dung đã rút gọn)"
 
     user_prompt_parts = [f"Câu hỏi: {clean_question}\n\nThông tin lịch sử:\n{context_str}"]
 
@@ -296,12 +334,13 @@ def query_timeline(
         )
 
         timeline_data = json.loads(raw)
+        answer_text = (timeline_data.pop("answer", "") or "").strip()
         from app.models import TimelineSnapshot
 
         snapshot = TimelineSnapshot(**timeline_data)
 
         if not snapshot.events:
-            raise ValueError("Generated timeline has no events")
+            return _timeline_fallback(chunks, graph_data)
 
         snapshot.events.sort(
             key=lambda e: (
@@ -320,16 +359,17 @@ def query_timeline(
             or len(entities)
         )
 
-        summary = f"**{snapshot.title}** - {len(snapshot.events)} sự kiện lịch sử"
-
         return {
-            "answer": summary,
+            "answer": answer_text or f"**{snapshot.title}** - {len(snapshot.events)} sự kiện lịch sử",
             "timeline": snapshot.model_dump(),
             "chunks_used": len(chunks),
             "entities": entities if isinstance(entities, list) else list(entities),
             "graph_nodes": graph_nodes_val,
         }
 
+    except (json.JSONDecodeError, ValidationError) as exc:
+        logger.warning("Timeline generation produced unusable output, falling back: %s", exc)
+        return _timeline_fallback(chunks, graph_data)
     except Exception as exc:
         logger.error("Timeline generation failed: %s", exc)
         raise RuntimeError(f"Timeline generation failed: {exc}")
