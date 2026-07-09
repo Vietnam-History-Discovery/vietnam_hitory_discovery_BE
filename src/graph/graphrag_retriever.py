@@ -523,13 +523,13 @@ def build_context(
         parts.append("")
 
     # B. Entities tìm được
-    if graph_data["entities"]:
+    if graph_data.get("entities"):
         parts.append("## Nhân vật / Địa danh / Sự kiện liên quan\n")
         parts.append(", ".join(graph_data["entities"]))
         parts.append("")
 
     # C. Quan hệ từ graph
-    if graph_data["relations"]:
+    if graph_data.get("relations"):
         parts.append("## Quan hệ trong Knowledge Graph\n")
         for r in graph_data["relations"][:15]:
             weight = f" (x{r['weight']})" if r.get("weight") else ""
@@ -537,7 +537,7 @@ def build_context(
         parts.append("")
 
     # D. Chunks bổ sung từ graph traversal
-    if graph_data["neighbor_chunks"]:
+    if graph_data.get("neighbor_chunks"):
         parts.append("## Đoạn văn bổ sung (từ graph traversal)\n")
         for chunk in graph_data["neighbor_chunks"]:
             parts.append(f"[+] {chunk['title']}")
@@ -557,8 +557,9 @@ class ClaudeGenerator:
             raise ValueError("Thiếu GROQ_API_KEY trong .env")
         self.client = Groq(api_key=api_key)
 
-    def generate(self, query: str, context: str) -> str:
-        prompt = f"""Bạn là chuyên gia lịch sử Việt Nam. Hãy trả lời câu hỏi của người dùng.
+    @staticmethod
+    def _chat_prompt(query: str, context: str) -> str:
+        return f"""Bạn là chuyên gia lịch sử Việt Nam. Hãy trả lời câu hỏi của người dùng.
 Bạn sẽ được cung cấp một số thông tin trích xuất từ tài liệu lịch sử (context). Hãy ưu tiên sử dụng thông tin từ context.
 Nếu context không có đủ thông tin, bạn có thể bổ sung bằng kiến thức lịch sử chuyên môn của mình để trả lời một cách đầy đủ và chính xác nhất.
 
@@ -569,13 +570,83 @@ Câu hỏi: {query}
 
 Trả lời bằng tiếng Việt, súc tích và chính xác:"""
 
+    def generate(self, query: str, context: str) -> str:
         response = self.client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": self._chat_prompt(query, context)}],
             max_tokens=1024,
             temperature=0.1,
         )
         return response.choices[0].message.content
+
+    def generate_stream(self, query: str, context: str):
+        """Yields text deltas as they arrive from Groq. Same prompt/model as generate()."""
+        stream = self.client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": self._chat_prompt(query, context)}],
+            max_tokens=1024,
+            temperature=0.1,
+            stream=True,
+        )
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
+
+    def generate_answer_stream(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str,
+        max_tokens: int = 1024,
+        temperature: float = 0.1,
+    ):
+        """Yields text deltas for an arbitrary system/user prompt pair. Same
+        streaming shape as generate_stream() above, but parameterized instead
+        of hardcoded to the chat prompt/model, so other callers (e.g. timeline
+        generation) can reuse it."""
+        stream = self.client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+            stream=True,
+        )
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
+
+    def generate_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: dict,
+        schema_name: str,
+        model: str,
+        max_tokens: int = 4096,
+        temperature: float = 0.1,
+    ) -> str:
+        response = self.client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": schema_name, "schema": schema, "strict": True},
+            },
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        raw = response.choices[0].message.content
+        if not raw:
+            raise ValueError("Empty response from LLM")
+        return raw
 
 
 # ─── Main GraphRAG Pipeline ───────────────────────────────────────────────────

@@ -4,6 +4,7 @@ import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.Query;
 import com.google.firebase.cloud.FirestoreClient;
 import com.vietnamhistory.chatservice.entity.ChatSession;
+import com.vietnamhistory.chatservice.entity.SessionType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
@@ -42,16 +43,23 @@ public class ChatSessionRepository {
     }
 
     public List<ChatSession> findByUserIdOrderByUpdatedAtDesc(String userId) {
+        return findByUserIdAndTypeOrderByUpdatedAtDesc(userId, null);
+    }
+
+    public List<ChatSession> findByUserIdAndTypeOrderByUpdatedAtDesc(String userId, SessionType type) {
         List<ChatSession> sessions = new ArrayList<>();
         try {
-            var query = getFirestore().collection("chat_sessions")
-                    .whereEqualTo("userId", userId)
-                    .orderBy("updatedAt", Query.Direction.DESCENDING)
-                    .get().get();
-            for (var doc : query.getDocuments()) {
+            var collection = getFirestore().collection("chat_sessions");
+            var query = collection.whereEqualTo("userId", userId)
+                    .orderBy("updatedAt", Query.Direction.DESCENDING);
+            var docs = query.get().get();
+            for (var doc : docs.getDocuments()) {
                 ChatSession session = doc.toObject(ChatSession.class);
                 if (session != null) {
                     session.setId(doc.getId());
+                    if (session.getSessionType() == null) {
+                        session.setSessionType(SessionType.CHAT);
+                    }
                 }
                 sessions.add(session);
             }
@@ -60,6 +68,9 @@ public class ChatSessionRepository {
             log.error("Firestore findByUserId interrupted for userId={}", userId, e);
         } catch (ExecutionException e) {
             log.error("Firestore findByUserId failed for userId={}", userId, e);
+        }
+        if (type != null) {
+            sessions.removeIf(s -> s.getSessionType() != type);
         }
         return sessions;
     }

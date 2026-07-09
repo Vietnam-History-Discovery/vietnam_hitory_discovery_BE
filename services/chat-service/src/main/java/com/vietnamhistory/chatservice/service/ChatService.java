@@ -1,19 +1,24 @@
 package com.vietnamhistory.chatservice.service;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vietnamhistory.chatservice.dto.AiQueryRequest;
 import com.vietnamhistory.chatservice.dto.AiQueryResponse;
 import com.vietnamhistory.chatservice.dto.AskRequest;
@@ -22,9 +27,15 @@ import com.vietnamhistory.chatservice.dto.CreateSessionRequest;
 import com.vietnamhistory.chatservice.dto.MessageDto;
 import com.vietnamhistory.chatservice.dto.SessionDto;
 import com.vietnamhistory.chatservice.dto.SessionWithMessagesDto;
+import com.vietnamhistory.chatservice.dto.TimelineAiRequest;
+import com.vietnamhistory.chatservice.dto.TimelineAiRequest.RecentExchange;
+import com.vietnamhistory.chatservice.dto.TimelineRequest;
+import com.vietnamhistory.chatservice.dto.TimelineSnapshotDto;
 import com.vietnamhistory.chatservice.entity.ChatMessage;
 import com.vietnamhistory.chatservice.entity.ChatSession;
 import com.vietnamhistory.chatservice.entity.MessageRole;
+import com.vietnamhistory.chatservice.entity.MessageType;
+import com.vietnamhistory.chatservice.entity.SessionType;
 import com.vietnamhistory.chatservice.repository.ChatMessageRepository;
 import com.vietnamhistory.chatservice.repository.ChatSessionRepository;
 
@@ -43,6 +54,15 @@ public class ChatService {
     @Autowired
     private RestTemplate aiRestTemplate;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
+    @Autowired
+    private SseRelayService sseRelay;
+
+    @Value("${ai.service.url}")
+    private String aiServiceUrl;
+
     public SessionDto createSession(String userId, CreateSessionRequest request) {
         String title = (request.title() != null && !request.title().isBlank())
                 ? request.title()
@@ -50,11 +70,16 @@ public class ChatService {
         ChatSession session = new ChatSession();
         session.setUserId(userId);
         session.setTitle(title);
+        session.setSessionType(request.type() != null ? request.type() : SessionType.CHAT);
         return toSessionDto(sessionRepository.save(session));
     }
 
     public List<SessionDto> getUserSessions(String userId) {
-        return sessionRepository.findByUserIdOrderByUpdatedAtDesc(userId)
+        return getUserSessionsByType(userId, null);
+    }
+
+    public List<SessionDto> getUserSessionsByType(String userId, SessionType type) {
+        return sessionRepository.findByUserIdAndTypeOrderByUpdatedAtDesc(userId, type)
                 .stream()
                 .map(this::toSessionDto)
                 .collect(Collectors.toList());
@@ -109,6 +134,44 @@ public class ChatService {
         return new AskResponse(aiResponse.answer(), aiResponse.chunksUsed(), aiResponse.entities(), aiResponse.graphNodes());
     }
 
+    public SseEmitter askStream(String userId, String sessionId, AskRequest request) {
+        ChatSession session = findSessionForUser(userId, sessionId);
+
+        String aiQuestion = (request.context() != null && !request.context().isBlank())
+                ? "[" + request.context() + "] " + request.question()
+                : request.question();
+        long nextSequence = messageRepository.nextSequence(sessionId);
+
+        ChatMessage userMsg = new ChatMessage();
+        userMsg.setSessionId(sessionId);
+        userMsg.setRole(MessageRole.USER);
+        userMsg.setContent(request.question());
+        userMsg.setSequence(nextSequence);
+        messageRepository.save(userMsg);
+
+        session.setUpdatedAt(LocalDateTime.now().toString());
+        sessionRepository.save(session);
+
+        return sseRelay.relay(
+                aiServiceUrl + "/query/stream",
+                new AiQueryRequest(aiQuestion, AI_TOP_K),
+                (accumulatedAnswer, capturedEvents) -> {
+                    ChatMessage assistantMsg = new ChatMessage();
+                    assistantMsg.setSessionId(sessionId);
+                    assistantMsg.setRole(MessageRole.ASSISTANT);
+                    assistantMsg.setContent(accumulatedAnswer);
+                    assistantMsg.setSequence(nextSequence + 1);
+                    messageRepository.save(assistantMsg);
+
+                    session.setUpdatedAt(LocalDateTime.now().toString());
+                    sessionRepository.save(session);
+                },
+                (err, emitter) -> {
+                    log.error("Chat stream failed for session {}: {}", sessionId, err.getMessage());
+                    emitter.completeWithError(err);
+                });
+    }
+
     public List<MessageDto> getMessages(String userId, String sessionId) {
         findSessionForUser(userId, sessionId);
         return messageRepository.findBySessionIdOrderByCreatedAtAsc(sessionId)
@@ -143,6 +206,102 @@ public class ChatService {
         }
     }
 
+    public SseEmitter askTimelineStream(String userId, String sessionId, TimelineRequest request) {
+        ChatSession session = findSessionForUser(userId, sessionId);
+
+        long nextSequence = messageRepository.nextSequence(sessionId);
+
+        ChatMessage userMsg = new ChatMessage();
+        userMsg.setSessionId(sessionId);
+        userMsg.setRole(MessageRole.USER);
+        userMsg.setContent(request.question());
+        userMsg.setSequence(nextSequence);
+        userMsg.setMessageType(MessageType.TEXT);
+        messageRepository.save(userMsg);
+
+        session.setUpdatedAt(LocalDateTime.now().toString());
+        sessionRepository.save(session);
+
+        TimelineHistoryContext historyContext = buildTimelineHistoryContext(sessionId);
+
+        String aiQuestion = (request.context() != null && !request.context().isBlank())
+                ? "[" + request.context() + "] " + request.question()
+                : request.question();
+
+        return sseRelay.relay(
+                aiServiceUrl + "/query/timeline/stream",
+                new TimelineAiRequest(aiQuestion, request.context(), historyContext.currentSnapshot(), historyContext.recentExchanges()),
+                (accumulatedAnswer, capturedEvents) -> {
+                    String timelineRaw = capturedEvents.get("timeline");
+                    String content = accumulatedAnswer;
+                    String timelineJson = null;
+
+                    if (timelineRaw != null) {
+                        try {
+                            TimelineSnapshotDto snapshot = objectMapper.readValue(timelineRaw, TimelineSnapshotDto.class);
+                            timelineJson = objectMapper.writeValueAsString(snapshot);
+                        } catch (JsonProcessingException e) {
+                            log.warn("Failed to parse/serialize streamed timeline snapshot: {}", e.getMessage());
+                        }
+                    }
+
+                    ChatMessage assistantMsg = new ChatMessage();
+                    assistantMsg.setSessionId(sessionId);
+                    assistantMsg.setRole(MessageRole.ASSISTANT);
+                    assistantMsg.setContent(content);
+                    assistantMsg.setMessageType(MessageType.TIMELINE);
+                    assistantMsg.setTimeline(timelineJson);
+                    assistantMsg.setSequence(nextSequence + 1);
+                    messageRepository.save(assistantMsg);
+
+                    session.setUpdatedAt(LocalDateTime.now().toString());
+                    sessionRepository.save(session);
+                },
+                (err, emitter) -> {
+                    log.error("Timeline stream failed for session {}: {}", sessionId, err.getMessage());
+                    emitter.completeWithError(err);
+                });
+    }
+
+    private record TimelineHistoryContext(TimelineSnapshotDto currentSnapshot, List<RecentExchange> recentExchanges) {
+    }
+
+    private TimelineHistoryContext buildTimelineHistoryContext(String sessionId) {
+        List<ChatMessage> recentMessages = messageRepository.findBySessionIdOrderByCreatedAtAsc(sessionId);
+        TimelineSnapshotDto currentSnapshot = null;
+        List<RecentExchange> recentExchanges = new ArrayList<>();
+
+        int exchangeCount = 0;
+        for (int i = recentMessages.size() - 1; i >= 0 && exchangeCount < 3; i--) {
+            ChatMessage msg = recentMessages.get(i);
+            if (msg.getRole() == MessageRole.ASSISTANT && msg.getMessageType() == MessageType.TIMELINE) {
+                if (currentSnapshot == null && msg.getTimeline() != null) {
+                    try {
+                        currentSnapshot = objectMapper.readValue(msg.getTimeline(), TimelineSnapshotDto.class);
+                    } catch (JsonProcessingException e) {
+                        log.warn("Failed to parse existing timeline snapshot: {}", e.getMessage());
+                    }
+                }
+            }
+        }
+
+        for (int i = recentMessages.size() - 1; i >= 0 && exchangeCount < 3; i -= 2) {
+            ChatMessage assistant = i >= 0 ? recentMessages.get(i) : null;
+            ChatMessage user = i - 1 >= 0 ? recentMessages.get(i - 1) : null;
+
+            if (assistant != null && assistant.getRole() == MessageRole.ASSISTANT
+                    && user != null && user.getRole() == MessageRole.USER) {
+                recentExchanges.add(0, new RecentExchange(user.getContent(), assistant.getContent()));
+                exchangeCount++;
+            } else if (assistant != null && assistant.getRole() == MessageRole.ASSISTANT) {
+                recentExchanges.add(0, new RecentExchange("", assistant.getContent()));
+                exchangeCount++;
+            }
+        }
+
+        return new TimelineHistoryContext(currentSnapshot, recentExchanges);
+    }
+
     private ChatSession findSessionForUser(String userId, String sessionId) {
         log.info("findSessionForUser: userId={}, sessionId={}", userId, sessionId);
         var optSession = sessionRepository.findById(sessionId);
@@ -157,10 +316,20 @@ public class ChatService {
     }
 
     private SessionDto toSessionDto(ChatSession s) {
-        return new SessionDto(s.getId(), s.getUserId(), s.getTitle(), s.getCreatedAt(), s.getUpdatedAt());
+        return new SessionDto(s.getId(), s.getUserId(), s.getTitle(),
+                s.getSessionType(), s.getCreatedAt(), s.getUpdatedAt());
     }
 
     private MessageDto toMessageDto(ChatMessage m) {
-        return new MessageDto(m.getId(), m.getSessionId(), m.getRole(), m.getContent(), m.getCreatedAt(), m.getSequence());
+        TimelineSnapshotDto timelineDto = null;
+        if (m.getTimeline() != null) {
+            try {
+                timelineDto = objectMapper.readValue(m.getTimeline(), TimelineSnapshotDto.class);
+            } catch (JsonProcessingException e) {
+                log.warn("Failed to deserialize timeline for message {}: {}", m.getId(), e.getMessage());
+            }
+        }
+        return new MessageDto(m.getId(), m.getSessionId(), m.getRole(), m.getContent(),
+                m.getMessageType(), timelineDto, m.getCreatedAt(), m.getSequence());
     }
 }

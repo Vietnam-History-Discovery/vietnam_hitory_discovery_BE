@@ -8,16 +8,21 @@ public class ChatMessage {
     private String sessionId;
     private MessageRole role;
     private String content;
+    private MessageType messageType;
+    private String timeline;
     private String createdAt;
     private Long sequence;
 
-    public ChatMessage() {}
+    public ChatMessage() {
+        this.messageType = MessageType.TEXT;
+    }
 
     public ChatMessage(String id, String sessionId, MessageRole role, String content) {
         this.id = id;
         this.sessionId = sessionId;
         this.role = role;
         this.content = content;
+        this.messageType = MessageType.TEXT;
         this.createdAt = LocalDateTime.now().toString();
     }
 
@@ -32,6 +37,12 @@ public class ChatMessage {
 
     public String getContent() { return content; }
     public void setContent(String content) { this.content = content; }
+
+    public MessageType getMessageType() { return messageType; }
+    public void setMessageType(MessageType messageType) { this.messageType = messageType; }
+
+    public String getTimeline() { return timeline; }
+    public void setTimeline(String timeline) { this.timeline = timeline; }
 
     public String getCreatedAt() { return createdAt; }
     public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
