@@ -577,6 +577,34 @@ Trả lời bằng tiếng Việt, súc tích và chính xác:"""
         )
         return response.choices[0].message.content
 
+    def generate_structured(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: dict,
+        schema_name: str,
+        model: str,
+        max_tokens: int = 4096,
+        temperature: float = 0.1,
+    ) -> str:
+        response = self.client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {"name": schema_name, "schema": schema, "strict": True},
+            },
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        raw = response.choices[0].message.content
+        if not raw:
+            raise ValueError("Empty response from LLM")
+        return raw
+
 
 # ─── Main GraphRAG Pipeline ───────────────────────────────────────────────────
 

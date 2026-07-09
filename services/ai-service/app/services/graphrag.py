@@ -9,8 +9,6 @@ import os
 import uuid
 from typing import Optional
 
-from groq import Groq
-
 logger = logging.getLogger(__name__)
 
 # Module-level singletons – populated by load()
@@ -78,12 +76,11 @@ def chunks_loaded() -> int:
 
 # ── Query helpers ──────────────────────────────────────────────────────────────
 
-def query_graph(question: str, top_k: int = 10) -> dict:
-    """GraphRAG query: vector search → graph expansion → LLM generation."""
+def _retrieve(question: str, context_override: Optional[str] = None, top_k: int = 10) -> dict:
+    """Shared retrieval pipeline: dynasty-prefix stripping → entity lookup →
+    vector search → graph expansion → context string. Used by both
+    query_graph and query_timeline so the two stay in sync."""
     from graphrag_retriever import build_context, extract_entity  # type: ignore[import]
-
-    if not _ready:
-        raise RuntimeError("GraphRAG not initialised")
 
     # Strip context prefix [dynasty_name] nếu có
     dynasty_context: Optional[str] = None
@@ -93,6 +90,9 @@ def query_graph(question: str, top_k: int = 10) -> dict:
         dynasty_context = question[1:end].strip()
         clean_question = question[end + 1:].strip()
         logger.info("Dynasty context: '%s' | Clean question: '%s'", dynasty_context, clean_question)
+
+    if context_override:
+        dynasty_context = context_override
 
     # Entity lookup for definition-style queries ("là ai", "là gì", bare noun phrases)
     entity_info = None
@@ -148,16 +148,33 @@ def query_graph(question: str, top_k: int = 10) -> dict:
             logger.warning("Graph expansion failed: %s", exc)
 
     context_str = build_context(clean_question, chunks, graph_data, entity_info=entity_info)
+    if dynasty_context:
+        context_str = f"## Triều đại đang xem: {dynasty_context}\n\n" + context_str
+
+    return {
+        "clean_question": clean_question,
+        "dynasty_context": dynasty_context,
+        "chunks": chunks,
+        "graph_data": graph_data,
+        "context_str": context_str,
+    }
+
+
+def query_graph(question: str, top_k: int = 10) -> dict:
+    """GraphRAG query: vector search → graph expansion → LLM generation."""
+    if not _ready:
+        raise RuntimeError("GraphRAG not initialised")
+
+    retrieval = _retrieve(question, top_k=top_k)
+    context_str = retrieval["context_str"]
+
     print("\n===== FULL CONTEXT =====\n")
     print(context_str[:5000])
     print("\n========================\n")
 
-    # Thêm dynasty context vào đầu prompt nếu có
-    if dynasty_context:
-        context_str = f"## Triều đại đang xem: {dynasty_context}\n\n" + context_str
+    answer = _llm.generate(retrieval["clean_question"], context_str)
 
-    answer = _llm.generate(clean_question, context_str)
-
+    graph_data = retrieval["graph_data"]
     entities: list = graph_data.get("entities", [])
     graph_nodes = (
         len(graph_data.get("nodes", []))
@@ -167,7 +184,7 @@ def query_graph(question: str, top_k: int = 10) -> dict:
 
     return {
         "answer": answer,
-        "chunks_used": len(chunks),
+        "chunks_used": len(retrieval["chunks"]),
         "entities": entities if isinstance(entities, list) else list(entities),
         "graph_nodes": graph_nodes,
     }
@@ -240,48 +257,14 @@ def query_timeline(
     recent_exchanges: Optional[list[dict]] = None,
 ) -> dict:
     """Generate a timeline snapshot using GraphRAG retrieval + Groq JSON Schema."""
-    from graphrag_retriever import build_context, extract_entity  # type: ignore[import]
-
     if not _ready:
         raise RuntimeError("GraphRAG not initialised")
 
-    dynasty_context: Optional[str] = None
-    clean_question = question
-    if question.startswith("[") and "]" in question:
-        end = question.index("]")
-        dynasty_context = question[1:end].strip()
-        clean_question = question[end + 1:].strip()
-
-    if context:
-        dynasty_context = context
-
-    entity_info = None
-    entity = extract_entity(clean_question)
-    if entity and _neo4j_ok and _graph_expander is not None:
-        try:
-            entity_info = _graph_expander.lookup_entity(entity)
-        except Exception as exc:
-            logger.warning("Entity lookup failed: %s", exc)
-
-    if entity_info is None and dynasty_context and _neo4j_ok and _graph_expander is not None:
-        try:
-            entity_info = _graph_expander.lookup_entity(dynasty_context)
-        except Exception as exc:
-            logger.warning("Dynasty context entity lookup failed: %s", exc)
-
-    chunks = _embed_store.search(clean_question, top_k=10, dynasty_context=dynasty_context)
-    chunk_ids = [c.get("chunk_id", c.get("id", "")) for c in chunks]
-
-    graph_data: dict = {}
-    if _neo4j_ok and _graph_expander is not None:
-        try:
-            graph_data = _graph_expander.expand(chunk_ids)
-        except Exception as exc:
-            logger.warning("Graph expansion failed: %s", exc)
-
-    context_str = build_context(clean_question, chunks, graph_data, entity_info=entity_info)
-    if dynasty_context:
-        context_str = f"## Triều đại đang xem: {dynasty_context}\n\n" + context_str
+    retrieval = _retrieve(question, context_override=context, top_k=10)
+    clean_question = retrieval["clean_question"]
+    context_str = retrieval["context_str"]
+    graph_data = retrieval["graph_data"]
+    chunks = retrieval["chunks"]
 
     user_prompt_parts = [f"Câu hỏi: {clean_question}\n\nThông tin lịch sử:\n{context_str}"]
 
@@ -304,35 +287,13 @@ def query_timeline(
     user_prompt = "\n".join(user_prompt_parts)
 
     try:
-        from groq import Groq
-
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            raise ValueError("Thiếu GROQ_API_KEY trong .env")
-
-        client = Groq(api_key=api_key)
-
-        response = client.chat.completions.create(
+        raw = _llm.generate_structured(
+            system_prompt=_TIMELINE_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            schema=_TIMELINE_JSON_SCHEMA,
+            schema_name="timeline_snapshot",
             model=_TIMELINE_MODEL,
-            messages=[
-                {"role": "system", "content": _TIMELINE_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "timeline_snapshot",
-                    "schema": _TIMELINE_JSON_SCHEMA,
-                    "strict": True,
-                },
-            },
-            max_tokens=4096,
-            temperature=0.1,
         )
-
-        raw = response.choices[0].message.content
-        if not raw:
-            raise ValueError("Empty response from LLM")
 
         timeline_data = json.loads(raw)
         from app.models import TimelineSnapshot
