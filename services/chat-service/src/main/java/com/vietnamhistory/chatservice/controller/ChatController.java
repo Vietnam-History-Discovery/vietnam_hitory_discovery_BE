@@ -1,14 +1,17 @@
 package com.vietnamhistory.chatservice.controller;
 
 import com.vietnamhistory.chatservice.dto.*;
+import com.vietnamhistory.chatservice.entity.SessionType;
 import com.vietnamhistory.chatservice.service.ChatService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 
@@ -29,8 +32,20 @@ public class ChatController {
     }
 
     @GetMapping("/sessions")
-    public ResponseEntity<List<SessionDto>> getSessions(HttpServletRequest httpRequest) {
-        return ResponseEntity.ok(chatService.getUserSessions(extractUserId(httpRequest)));
+    public ResponseEntity<List<SessionDto>> getSessions(
+            @RequestParam(required = false) String type,
+            HttpServletRequest httpRequest) {
+        String userId = extractUserId(httpRequest);
+        if (type != null && !type.isBlank()) {
+            SessionType sessionType;
+            try {
+                sessionType = SessionType.valueOf(type.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                sessionType = null;
+            }
+            return ResponseEntity.ok(chatService.getUserSessionsByType(userId, sessionType));
+        }
+        return ResponseEntity.ok(chatService.getUserSessions(userId));
     }
 
     @GetMapping("/sessions/{id}")
@@ -54,6 +69,22 @@ public class ChatController {
             @Valid @RequestBody AskRequest request,
             HttpServletRequest httpRequest) {
         return ResponseEntity.ok(chatService.ask(extractUserId(httpRequest), id, request));
+    }
+
+    @PostMapping(value = "/sessions/{id}/ask/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter askStream(
+            @PathVariable String id,
+            @Valid @RequestBody AskRequest request,
+            HttpServletRequest httpRequest) {
+        return chatService.askStream(extractUserId(httpRequest), id, request);
+    }
+
+    @PostMapping(value = "/sessions/{id}/timeline/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter askTimelineStream(
+            @PathVariable String id,
+            @Valid @RequestBody TimelineRequest request,
+            HttpServletRequest httpRequest) {
+        return chatService.askTimelineStream(extractUserId(httpRequest), id, request);
     }
 
     @GetMapping("/sessions/{id}/messages")
