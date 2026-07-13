@@ -59,7 +59,7 @@ services:
 
   frontend:
     build:
-      context: ../vietnam_history_discovery_FE
+      context: ../vietnam_hitory_discovery_FE
       dockerfile: Dockerfile
       args:
         - VITE_FIREBASE_API_KEY=${VITE_FIREBASE_API_KEY}

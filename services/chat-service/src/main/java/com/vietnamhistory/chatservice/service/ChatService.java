@@ -44,6 +44,8 @@ public class ChatService {
 
     private static final Logger log = LoggerFactory.getLogger(ChatService.class);
     private static final int AI_TOP_K = 10;
+    private static final int HISTORY_MAX_MESSAGES = 6; // 3 exchanges
+    private static final int HISTORY_CONTENT_MAX_CHARS = 200;
 
     @Autowired
     private ChatSessionRepository sessionRepository;
@@ -142,6 +144,10 @@ public class ChatService {
                 : request.question();
         long nextSequence = messageRepository.nextSequence(sessionId);
 
+        // Snapshot conversation history before persisting the new question so
+        // it isn't duplicated in the history payload.
+        List<AiQueryRequest.ConversationTurn> history = buildConversationHistory(sessionId);
+
         ChatMessage userMsg = new ChatMessage();
         userMsg.setSessionId(sessionId);
         userMsg.setRole(MessageRole.USER);
@@ -154,7 +160,7 @@ public class ChatService {
 
         return sseRelay.relay(
                 aiServiceUrl + "/query/stream",
-                new AiQueryRequest(aiQuestion, AI_TOP_K),
+                new AiQueryRequest(aiQuestion, AI_TOP_K, history),
                 (accumulatedAnswer, capturedEvents) -> {
                     ChatMessage assistantMsg = new ChatMessage();
                     assistantMsg.setSessionId(sessionId);
@@ -170,6 +176,31 @@ public class ChatService {
                     log.error("Chat stream failed for session {}: {}", sessionId, err.getMessage());
                     emitter.completeWithError(err);
                 });
+    }
+
+    /**
+     * Last {@value #HISTORY_MAX_MESSAGES} TEXT messages of the session (oldest
+     * first), contents truncated to {@value #HISTORY_CONTENT_MAX_CHARS} chars,
+     * for conversation-aware retrieval in the AI service. TIMELINE messages
+     * are excluded.
+     */
+    private List<AiQueryRequest.ConversationTurn> buildConversationHistory(String sessionId) {
+        List<ChatMessage> messages = messageRepository.findBySessionIdOrderByCreatedAtAsc(sessionId);
+        List<AiQueryRequest.ConversationTurn> turns = new ArrayList<>();
+        for (int i = messages.size() - 1; i >= 0 && turns.size() < HISTORY_MAX_MESSAGES; i--) {
+            ChatMessage msg = messages.get(i);
+            if (msg.getMessageType() == MessageType.TIMELINE
+                    || msg.getContent() == null || msg.getContent().isBlank()) {
+                continue;
+            }
+            String content = msg.getContent();
+            if (content.length() > HISTORY_CONTENT_MAX_CHARS) {
+                content = content.substring(0, HISTORY_CONTENT_MAX_CHARS);
+            }
+            String role = msg.getRole() == MessageRole.ASSISTANT ? "assistant" : "user";
+            turns.add(0, new AiQueryRequest.ConversationTurn(role, content));
+        }
+        return turns;
     }
 
     public List<MessageDto> getMessages(String userId, String sessionId) {

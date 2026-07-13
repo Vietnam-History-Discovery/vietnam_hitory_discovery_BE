@@ -18,7 +18,11 @@ async def query_graph(req: QueryRequest) -> QueryResponse:
     if not graphrag_svc.is_ready():
         raise HTTPException(503, "GraphRAG service is not ready yet")
     try:
-        result = graphrag_svc.query_graph(req.question, top_k=req.top_k)
+        result = graphrag_svc.query_graph(
+            req.question,
+            top_k=req.top_k,
+            history=[t.model_dump() for t in req.history],
+        )
         return QueryResponse(**result)
     except Exception as exc:
         raise HTTPException(500, str(exc)) from exc
@@ -29,7 +33,11 @@ async def query_graph_stream(req: QueryRequest):
     """Streaming counterpart of POST /query — SSE frames: meta -> delta* -> done."""
     if not graphrag_svc.is_ready():
         raise HTTPException(503, "GraphRAG service is not ready yet")
-    return sse_response(graphrag_svc.query_graph_stream(req.question, top_k=req.top_k))
+    return sse_response(graphrag_svc.query_graph_stream(
+        req.question,
+        top_k=req.top_k,
+        history=[t.model_dump() for t in req.history],
+    ))
 
 
 @router.post("/naive", response_model=NaiveQueryResponse)
