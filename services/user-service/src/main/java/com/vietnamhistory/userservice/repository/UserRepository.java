@@ -4,16 +4,50 @@ import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.QueryDocumentSnapshot;
 import com.google.firebase.cloud.FirestoreClient;
 import com.vietnamhistory.userservice.entity.User;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 
 @Repository
 public class UserRepository {
 
+    private static final Logger log = LoggerFactory.getLogger(UserRepository.class);
+
     private Firestore getFirestore() {
         return FirestoreClient.getFirestore();
+    }
+
+    public List<User> findAll() {
+        List<User> users = new ArrayList<>();
+        try {
+            var docs = getFirestore().collection("users").get().get();
+            for (QueryDocumentSnapshot doc : docs.getDocuments()) {
+                User user = doc.toObject(User.class);
+                if (user != null) {
+                    users.add(user);
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (ExecutionException e) {
+            log.error("Failed to fetch users", e);
+        }
+        return users;
+    }
+
+    public void deleteById(String id) {
+        try {
+            getFirestore().collection("users").document(id).delete().get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (ExecutionException e) {
+            log.error("Failed to delete user {}", id, e);
+        }
     }
 
     public Optional<User> findById(String id) {
