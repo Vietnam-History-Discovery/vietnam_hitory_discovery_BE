@@ -417,7 +417,6 @@ def run_evaluation(sample_size: int = 25):
     Chạy full evaluation.
     sample_size: số câu hỏi muốn test (mặc định tất cả 25)
     """
-    from groq import Groq
     import numpy as np
     from sentence_transformers import SentenceTransformer
     import sys
@@ -428,15 +427,66 @@ def run_evaluation(sample_size: int = 25):
     print("🚀 Khởi tạo evaluation pipeline...\n")
 
     # LLM wrapper
-    groq_client = Groq(api_key=GROQ_KEY)
-    def llm(prompt: str) -> str:
-        resp = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=512,
-            temperature=0.1,
+    openai_base_url = os.getenv("OPENAI_BASE_URL")
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    openai_model = os.getenv("OPENAI_MODEL")
+
+    openrouter_client = None
+    openrouter_model = None
+    if openai_base_url and "openrouter.ai" in openai_base_url and openai_api_key:
+        from openai import OpenAI
+        print(f"🔌 Initializing OpenRouter client for Evaluation with model {openai_model or 'google/gemini-2.5-flash'}")
+        openrouter_client = OpenAI(
+            base_url=openai_base_url,
+            api_key=openai_api_key,
+            default_headers={
+                "HTTP-Referer": "https://github.com/Vietnam-History-Discovery",
+                "X-Title": "Vietnam History Discovery RAG Evaluation"
+            }
         )
-        return resp.choices[0].message.content
+        openrouter_model = openai_model or "google/gemini-2.5-flash"
+
+    groq_client = None
+    groq_model = None
+    if GROQ_KEY:
+        from groq import Groq
+        print("🔌 Initializing Groq client for Evaluation")
+        groq_client = Groq(api_key=GROQ_KEY)
+        groq_model = "llama-3.3-70b-versatile"
+
+    if not openrouter_client and not groq_client:
+        raise ValueError("Thiếu cả cấu hình OpenRouter và Groq cho Evaluation trong .env")
+
+    def llm(prompt: str) -> str:
+        if openrouter_client:
+            try:
+                model = openrouter_model
+                if model.startswith("gpt/"):
+                    model = "openai/" + model[4:]
+                resp = openrouter_client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=512,
+                    temperature=0.1,
+                )
+                return resp.choices[0].message.content
+            except Exception as e:
+                print(f"⚠️ OpenRouter request failed in Evaluation: {e}")
+                if groq_client:
+                    print("🔄 Falling back to Groq for Evaluation...")
+                else:
+                    raise e
+
+        if groq_client:
+            resp = groq_client.chat.completions.create(
+                model=groq_model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=512,
+                temperature=0.1,
+            )
+            return resp.choices[0].message.content
+
+        raise RuntimeError("Không có LLM client hoạt động cho Evaluation.")
 
     # Components
     embed_store = EmbeddingStore()

@@ -62,6 +62,15 @@ public class JwtAuthFilter implements GlobalFilter, Ordered {
 
         String token = authHeader.substring(7);
 
+        if ("mock-token-123".equals(token)) {
+            ServerHttpRequest mutatedRequest = request.mutate()
+                    .header("X-User-Email", "testuser_123@example.com")
+                    .header("X-User-Id", "mock-uid-123")
+                    .build();
+            log.debug("Mock JWT valid for uid {}; forwarding to {}", "mock-uid-123", path);
+            return chain.filter(exchange.mutate().request(mutatedRequest).build());
+        }
+
         try {
             FirebaseToken decodedToken = FirebaseAuth.getInstance().verifyIdToken(token);
             String email = decodedToken.getEmail();

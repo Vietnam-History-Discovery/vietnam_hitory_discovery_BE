@@ -38,9 +38,6 @@ def _get_driver():
         _driver = GraphDatabase.driver(uri, auth=(user, pwd))
         logger.info("Dynasty Neo4j driver initialised")
     return _driver
-        
-        
-    return _driver
 
 
 def close() -> None:
@@ -79,7 +76,8 @@ async def list_dynasties() -> DynastyListResponse:
                     d.key_figures AS key_figures,
                     d.key_events AS key_events,
                     d.start_year AS start_year
-            ORDER BY d.start_year""",
+            ORDER BY COALESCE(d.start_year, 9999)
+            LIMIT 50""",
         )
     except Exception as exc:
         raise HTTPException(503, f"Neo4j query failed: {exc}") from exc
@@ -101,6 +99,7 @@ async def list_dynasties() -> DynastyListResponse:
     return DynastyListResponse(total=len(dynasties), dynasties=dynasties)
 
 
+
 @router.get("/{name}", response_model=DynastyDetail)
 async def get_dynasty(name: str) -> DynastyDetail:
     """Return detail for one dynasty: related persons, events, places, sample chunks."""
@@ -115,20 +114,29 @@ async def get_dynasty(name: str) -> DynastyDetail:
             ),
             asyncio.to_thread(
                 _run,
-                "MATCH (p:Person)-[:CO_OCCURS_WITH]-(d:Dynasty {name: $name}) "
-                "RETURN p.name AS name ORDER BY COALESCE(p.mentions, 0) DESC LIMIT 10",
+                "MATCH (d:Dynasty {name: $name}) "
+                "MATCH (p:Person)-[:MENTIONED_IN]->(c:Chunk)-[:BELONGS_TO_DYNASTY]->(d) "
+                "WHERE p.name IN d.key_figures OR any(alias IN p.aliases WHERE alias IN d.key_figures) "
+                "RETURN p.name AS name, count(c) AS count "
+                "ORDER BY count DESC LIMIT 10",
                 name=name,
             ),
             asyncio.to_thread(
                 _run,
-                "MATCH (e:Event)-[:CO_OCCURS_WITH]-(d:Dynasty {name: $name}) "
-                "RETURN e.name AS name LIMIT 10",
+                "MATCH (e:Event)-[:MENTIONED_IN]->(c:Chunk)-[:BELONGS_TO_DYNASTY]->(d:Dynasty) "
+                "WITH e, d, count(c) AS chunk_count "
+                "ORDER BY chunk_count DESC "
+                "WITH e, collect({dynasty: d.name, count: chunk_count})[0] AS primary "
+                "WHERE primary.dynasty = $name "
+                "RETURN e.name AS name, primary.count AS count "
+                "ORDER BY count DESC LIMIT 10",
                 name=name,
             ),
             asyncio.to_thread(
                 _run,
-                "MATCH (pl:Place)-[:CO_OCCURS_WITH]-(d:Dynasty {name: $name}) "
-                "RETURN pl.name AS name LIMIT 10",
+                "MATCH (pl:Place)-[:MENTIONED_IN]->(c:Chunk)-[:BELONGS_TO_DYNASTY]->(d:Dynasty {name: $name}) "
+                "RETURN pl.name AS name, count(c) AS count "
+                "ORDER BY count DESC LIMIT 10",
                 name=name,
             ),
             asyncio.to_thread(
@@ -145,12 +153,24 @@ async def get_dynasty(name: str) -> DynastyDetail:
     if not base_row:
         raise HTTPException(404, f"Dynasty '{name}' not found")
 
+    filtered_persons = [r["name"] for r in persons]
+    filtered_events = [r["name"] for r in events]
+
+    # Filter places: only return places with count >= 2 (if the top place has count >= 3)
+    filtered_places = []
+    if places:
+        max_count = places[0]["count"]
+        for r in places:
+            if max_count >= 3 and r["count"] < 2:
+                continue
+            filtered_places.append(r["name"])
+
     return DynastyDetail(
         name=base_row[0]["name"],
         mentions=base_row[0]["mentions"],
-        persons=[r["name"] for r in persons],
-        events=[r["name"] for r in events],
-        places=[r["name"] for r in places],
+        persons=filtered_persons,
+        events=filtered_events,
+        places=filtered_places,
         sample_chunks=[
             ChunkPreview(title=r.get("title", ""), text=r.get("text", ""))
             for r in chunks

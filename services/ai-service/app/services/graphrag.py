@@ -58,10 +58,15 @@ def load() -> None:
 
 
 def close() -> None:
-    global _graph_expander, _ready
+    global _graph_expander, _embed_store, _ready
     if _graph_expander is not None:
         try:
             _graph_expander.close()
+        except Exception:
+            pass
+    if _embed_store is not None:
+        try:
+            _embed_store.close()
         except Exception:
             pass
     _ready = False

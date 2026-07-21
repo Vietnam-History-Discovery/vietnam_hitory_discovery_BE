@@ -123,7 +123,25 @@ class EmbeddingStore:
         self.model   = SentenceTransformer(model_name)
         self.chunks  : list[dict]       = []
         self.vectors : Optional[np.ndarray] = None
+        self._driver = None
         os.makedirs(EMBED_DIR, exist_ok=True)
+
+    def get_neo4j_driver(self):
+        if not hasattr(self, "_driver") or self._driver is None:
+            from neo4j import GraphDatabase
+            if NEO4J_URI:
+                self._driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+            else:
+                self._driver = None
+        return self._driver
+
+    def close(self):
+        if hasattr(self, "_driver") and self._driver is not None:
+            try:
+                self._driver.close()
+            except Exception:
+                pass
+            self._driver = None
 
     def build(self, chunks_path: Optional[str] = None):
         """Embed tất cả chunks, lưu cache."""
@@ -268,6 +286,44 @@ class EmbeddingStore:
         print("=" * 60)
 
         # --------------------------------------------------
+        # Step 3.5: Fetch Neo4j Query Expansion bridges and core figures
+        # --------------------------------------------------
+        bridge_keywords = []
+        dynasty_entities = []
+        driver = self.get_neo4j_driver()
+
+        if driver:
+            if dynasty_context:
+                try:
+                    with driver.session() as session:
+                        rows = session.run("""
+                            MATCH (d:Dynasty) WHERE toLower(d.name) = toLower($dynasty)
+                            MATCH (e)-[r:CO_OCCURS_WITH]-(d)
+                            RETURN coalesce(e.name, e.text) AS name
+                            ORDER BY coalesce(r.count, 0) DESC
+                            LIMIT 5
+                        """, dynasty=dynasty_context).data()
+                        dynasty_entities = [r["name"] for r in rows if r["name"]]
+                        print(f"🏛️  DYNASTY CORE ENTITIES: {dynasty_entities}")
+                except Exception as exc:
+                    print(f"[WARN] Failed to retrieve dynasty entities: {exc}")
+
+            if dynasty_context and entity:
+                try:
+                    with driver.session() as session:
+                        rows = session.run("""
+                            MATCH (p) WHERE toLower(coalesce(p.name, p.text)) = toLower($entity)
+                            MATCH (d:Dynasty) WHERE toLower(d.name) = toLower($dynasty)
+                            MATCH (p)-[:CO_OCCURS_WITH]-(bridge)-[:CO_OCCURS_WITH]-(d)
+                            RETURN DISTINCT coalesce(bridge.name, bridge.text) AS bridge_name
+                            LIMIT 5
+                        """, entity=entity, dynasty=dynasty_context).data()
+                        bridge_keywords = [r["bridge_name"] for r in rows if r["bridge_name"]]
+                        print(f"🔗 GRAPH BRIDGE KEYWORDS FOUND: {bridge_keywords}")
+                except Exception as exc:
+                    print(f"[WARN] Failed to retrieve graph bridges: {exc}")
+
+        # --------------------------------------------------
         # Step 4: Apply boosts on RRF scores
         # --------------------------------------------------
 
@@ -288,6 +344,17 @@ class EmbeddingStore:
                     ))
                 ):
                     rrf_scores[chunk_idx] = base + 8.0
+
+            # bridge keywords boost
+            for kw in bridge_keywords:
+                if kw.lower() in text_lower or kw.lower() in title_lower:
+                    rrf_scores[chunk_idx] = rrf_scores[chunk_idx] + 4.0
+                    print(f"BRIDGE HIT -> {kw} in {chunk.get('chunk_id')}")
+
+            # dynasty core entities boost
+            for kw in dynasty_entities:
+                if kw.lower() in text_lower or kw.lower() in title_lower:
+                    rrf_scores[chunk_idx] = rrf_scores[chunk_idx] + 2.0
 
             if entity and len(entity.split()) >= 2:
                 # entity phrase boost — precise match only
@@ -551,11 +618,35 @@ def build_context(
 
 class ClaudeGenerator:
     def __init__(self):
-        from groq import Groq
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key:
-            raise ValueError("Thiếu GROQ_API_KEY trong .env")
-        self.client = Groq(api_key=api_key)
+        openai_base_url = os.getenv("OPENAI_BASE_URL")
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        openai_model = os.getenv("OPENAI_MODEL")
+
+        self.openrouter_client = None
+        self.groq_client = None
+
+        if openai_base_url and "openrouter.ai" in openai_base_url and openai_api_key:
+            from openai import OpenAI
+            print(f"🔌 Initializing OpenRouter client with model {openai_model or 'google/gemini-2.5-flash'}")
+            self.openrouter_client = OpenAI(
+                base_url=openai_base_url,
+                api_key=openai_api_key,
+                default_headers={
+                    "HTTP-Referer": "https://github.com/Vietnam-History-Discovery",
+                    "X-Title": "Vietnam History Discovery RAG"
+                }
+            )
+            self.openrouter_model = openai_model or "google/gemini-2.5-flash"
+
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        if groq_api_key:
+            from groq import Groq
+            print("🔌 Initializing Groq client")
+            self.groq_client = Groq(api_key=groq_api_key)
+            self.groq_model = "llama-3.3-70b-versatile"
+
+        if not self.openrouter_client and not self.groq_client:
+            raise ValueError("Thiếu cả cấu hình OpenRouter và Groq trong .env")
 
     @staticmethod
     def _chat_prompt(query: str, context: str) -> str:
@@ -570,28 +661,79 @@ Câu hỏi: {query}
 
 Trả lời bằng tiếng Việt, súc tích và chính xác:"""
 
+    def _get_client_and_model(self, model: Optional[str] = None):
+        if self.openrouter_client:
+            if model and ("llama" in model.lower() or "mixtral" in model.lower() or "gemma" in model.lower()) and self.groq_client:
+                return self.groq_client, self.groq_model
+            model_to_use = model or self.openrouter_model
+            if model_to_use.startswith("gpt/"):
+                model_to_use = "openai/" + model_to_use[4:]
+            return self.openrouter_client, model_to_use
+        elif self.groq_client:
+            return self.groq_client, self.groq_model
+        raise RuntimeError("Không có LLM client hoạt động.")
+
     def generate(self, query: str, context: str) -> str:
-        response = self.client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": self._chat_prompt(query, context)}],
-            max_tokens=1024,
-            temperature=0.1,
-        )
-        return response.choices[0].message.content
+        prompt = self._chat_prompt(query, context)
+        client, model = self._get_client_and_model()
+        
+        try:
+            print(f"🤖 Attempting query with {model}...")
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1024,
+                temperature=0.1,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"⚠️ Request failed with {model}: {e}")
+            if client == self.openrouter_client and self.groq_client:
+                print("🔄 Falling back to Groq...")
+                response = self.groq_client.chat.completions.create(
+                    model=self.groq_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=1024,
+                    temperature=0.1,
+                )
+                return response.choices[0].message.content
+            raise e
 
     def generate_stream(self, query: str, context: str):
-        """Yields text deltas as they arrive from Groq. Same prompt/model as generate()."""
-        stream = self.client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": self._chat_prompt(query, context)}],
-            max_tokens=1024,
-            temperature=0.1,
-            stream=True,
-        )
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        """Yields text deltas as they arrive from LLM. Same prompt/model as generate()."""
+        prompt = self._chat_prompt(query, context)
+        client, model = self._get_client_and_model()
+        
+        try:
+            print(f"🤖 Attempting stream with {model}...")
+            stream = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1024,
+                temperature=0.1,
+                stream=True,
+            )
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+        except Exception as e:
+            print(f"⚠️ Stream failed with {model}: {e}")
+            if client == self.openrouter_client and self.groq_client:
+                print("🔄 Falling back to Groq stream...")
+                stream = self.groq_client.chat.completions.create(
+                    model=self.groq_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=1024,
+                    temperature=0.1,
+                    stream=True,
+                )
+                for chunk in stream:
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        yield delta
+            else:
+                raise e
 
     def generate_answer_stream(
         self,
@@ -605,20 +747,44 @@ Trả lời bằng tiếng Việt, súc tích và chính xác:"""
         streaming shape as generate_stream() above, but parameterized instead
         of hardcoded to the chat prompt/model, so other callers (e.g. timeline
         generation) can reuse it."""
-        stream = self.client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=max_tokens,
-            temperature=temperature,
-            stream=True,
-        )
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta
+        client, model_to_use = self._get_client_and_model(model)
+        
+        try:
+            print(f"🤖 Attempting answer stream with {model_to_use}...")
+            stream = client.chat.completions.create(
+                model=model_to_use,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=max_tokens,
+                temperature=temperature,
+                stream=True,
+            )
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content
+                if delta:
+                    yield delta
+        except Exception as e:
+            print(f"⚠️ Answer stream failed with {model_to_use}: {e}")
+            if client == self.openrouter_client and self.groq_client:
+                print("🔄 Falling back to Groq stream...")
+                stream = self.groq_client.chat.completions.create(
+                    model=self.groq_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    stream=True,
+                )
+                for chunk in stream:
+                    delta = chunk.choices[0].delta.content
+                    if delta:
+                        yield delta
+            else:
+                raise e
 
     def generate_structured(
         self,
@@ -630,23 +796,50 @@ Trả lời bằng tiếng Việt, súc tích và chính xác:"""
         max_tokens: int = 4096,
         temperature: float = 0.1,
     ) -> str:
-        response = self.client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_format={
-                "type": "json_schema",
-                "json_schema": {"name": schema_name, "schema": schema, "strict": True},
-            },
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
-        raw = response.choices[0].message.content
-        if not raw:
-            raise ValueError("Empty response from LLM")
-        return raw
+        client, model_to_use = self._get_client_and_model(model)
+        
+        try:
+            print(f"🤖 Attempting structured generation with {model_to_use}...")
+            response = client.chat.completions.create(
+                model=model_to_use,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {"name": schema_name, "schema": schema, "strict": True},
+                },
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            raw = response.choices[0].message.content
+            if not raw:
+                raise ValueError("Empty response from LLM")
+            return raw
+        except Exception as e:
+            print(f"⚠️ Structured generation failed with {model_to_use}: {e}")
+            if client == self.openrouter_client and self.groq_client:
+                print("🔄 Falling back to Groq for structured generation...")
+                response = self.groq_client.chat.completions.create(
+                    model=self.groq_model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {"name": schema_name, "schema": schema, "strict": True},
+                    },
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+                raw = response.choices[0].message.content
+                if not raw:
+                    raise ValueError("Empty response from LLM")
+                return raw
+            else:
+                raise e
 
 
 # ─── Main GraphRAG Pipeline ───────────────────────────────────────────────────
