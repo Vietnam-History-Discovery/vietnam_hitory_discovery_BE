@@ -27,8 +27,11 @@ public class JwtAuthFilter implements GlobalFilter, Ordered {
 
     private static final Logger log = LoggerFactory.getLogger(JwtAuthFilter.class);
 
-    // Paths that bypass JWT validation
+    // Paths that bypass JWT validation entirely
     private static final List<String> PUBLIC_PREFIXES = List.of("/api/auth/");
+
+    // Paths that are public for read (GET) requests only — writes still require a valid token
+    private static final List<String> PUBLIC_GET_PREFIXES = List.of("/api/articles");
 
     @Override
     public int getOrder() {
@@ -40,8 +43,8 @@ public class JwtAuthFilter implements GlobalFilter, Ordered {
         ServerHttpRequest request = exchange.getRequest();
         String path = request.getPath().value();
 
-        // Skip auth for public paths and CORS preflight
-        if (isPublicPath(path) || isPreflightRequest(request)) {
+        // Skip auth for public paths, public GET reads, and CORS preflight
+        if (isPublicPath(path) || isPublicGetRequest(path, request.getMethod()) || isPreflightRequest(request)) {
             return chain.filter(exchange);
         }
 
@@ -75,6 +78,10 @@ public class JwtAuthFilter implements GlobalFilter, Ordered {
 
     private boolean isPublicPath(String path) {
         return PUBLIC_PREFIXES.stream().anyMatch(path::startsWith);
+    }
+
+    private boolean isPublicGetRequest(String path, HttpMethod method) {
+        return HttpMethod.GET.equals(method) && PUBLIC_GET_PREFIXES.stream().anyMatch(path::startsWith);
     }
 
     private boolean isPreflightRequest(ServerHttpRequest request) {
