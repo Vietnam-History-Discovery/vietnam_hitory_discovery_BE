@@ -86,7 +86,114 @@ def chunks_loaded() -> int:
 
 # ── Query helpers ──────────────────────────────────────────────────────────────
 
-def _retrieve(question: str, context_override: Optional[str] = None, top_k: int = 10) -> dict:
+_HISTORY_MAX_TURNS = 6           # sliding window: 3 exchanges
+_HISTORY_MAX_EXCHANGES = 3
+_HISTORY_CONTENT_MAX_CHARS = 200
+_HISTORY_MAX_ENTITIES = 3
+_HISTORY_TAIL_WINDOW_SIZES = (4, 3, 2)
+
+
+def _entities_from_history(history: list[dict]) -> list[dict]:
+    """Extract Neo4j-verified entities from recent conversation turns.
+
+    Reuses extract_entity() for candidate detection. Longer questions like
+    "Tóm tắt cuộc khởi nghĩa Hai Bà Trưng" fail its bare-noun-phrase pass
+    (> 5 words), so trailing word windows are also tried to pick up entity
+    names at the end of the sentence. Only candidates that resolve to a graph
+    node via lookup_entity() are kept — this filters false positives such as
+    "kết quả cuộc khởi nghĩa" being read as an entity name.
+
+    Returns entity-info dicts (as produced by lookup_entity), newest turn
+    first, deduplicated, at most _HISTORY_MAX_ENTITIES.
+    """
+    if not _neo4j_ok or _graph_expander is None:
+        return []
+
+    from graphrag_retriever import extract_entity  # type: ignore[import]
+
+    found: list[dict] = []
+    tried: set[str] = set()
+    found_names: set[str] = set()
+
+    for turn in reversed(history[-_HISTORY_MAX_TURNS:]):
+        content = (turn.get("content") or "").strip()[:_HISTORY_CONTENT_MAX_CHARS]
+        if not content:
+            continue
+
+        candidates: list[str] = []
+        direct = extract_entity(content)
+        if direct:
+            candidates.append(direct)
+        else:
+            words = content.split()
+            for size in _HISTORY_TAIL_WINDOW_SIZES:
+                if len(words) > size:
+                    tail = extract_entity(" ".join(words[-size:]))
+                    if tail:
+                        candidates.append(tail)
+
+        for candidate in candidates:
+            if candidate.lower() in tried:
+                continue
+            tried.add(candidate.lower())
+            try:
+                info = _graph_expander.lookup_entity(candidate)
+            except Exception as exc:
+                logger.warning("History entity lookup failed for '%s': %s", candidate, exc)
+                continue
+            if info and info.get("name"):
+                name_key = str(info["name"]).lower()
+                if name_key not in found_names:
+                    found_names.add(name_key)
+                    found.append(info)
+                break  # one entity per turn is enough
+
+        if len(found) >= _HISTORY_MAX_ENTITIES:
+            break
+
+    return found
+
+
+def _format_history_block(history: Optional[list[dict]]) -> str:
+    """Sliding-window summary of the last exchanges, prepended to the LLM
+    context so follow-up questions keep their conversational meaning."""
+    if not history:
+        return ""
+
+    exchanges: list[tuple[str, str]] = []
+    pending_user: Optional[str] = None
+    for turn in history[-_HISTORY_MAX_TURNS:]:
+        role = (turn.get("role") or "").lower()
+        content = (turn.get("content") or "").strip()[:_HISTORY_CONTENT_MAX_CHARS]
+        if not content:
+            continue
+        if role == "user":
+            pending_user = content
+        elif role == "assistant":
+            exchanges.append((pending_user or "", content))
+            pending_user = None
+    if pending_user is not None:
+        exchanges.append((pending_user, ""))
+
+    exchanges = exchanges[-_HISTORY_MAX_EXCHANGES:]
+    if not exchanges:
+        return ""
+
+    lines = ["Previous exchanges:"]
+    for user, assistant in exchanges:
+        if user:
+            lines.append(f"- User: {user}")
+        if assistant:
+            lines.append(f"{'  ' if user else '- '}Assistant: {assistant}")
+    return "\n".join(lines)
+
+
+def _retrieve(
+    question: str,
+    context_override: Optional[str] = None,
+    top_k: int = 10,
+    history: Optional[list[dict]] = None,
+) -> dict:
     """Shared retrieval pipeline: dynasty-prefix stripping → entity lookup →
     vector search → graph expansion → context string. Used by both
     query_graph and query_timeline_stream so the two stay in sync."""
@@ -136,7 +243,19 @@ def _retrieve(question: str, context_override: Optional[str] = None, top_k: int 
         except Exception as exc:
             logger.warning("Dynasty context entity lookup failed: %s", exc)
 
-    chunks = _embed_store.search(clean_question, top_k=top_k, dynasty_context=dynasty_context)
+    # Conversation-aware enrichment: when the current question resolves to no
+    # graph entity (follow-ups like "kết quả cuộc khởi nghĩa"), borrow entities
+    # tracked from recent turns so retrieval stays on the discussed topic.
+    search_question = clean_question
+    if entity_info is None and history:
+        session_entities = _entities_from_history(history)
+        if session_entities:
+            names = [e["name"] for e in session_entities[:_HISTORY_MAX_ENTITIES]]
+            search_question = clean_question + " [context: " + ", ".join(names) + "]"
+            entity_info = session_entities[0]
+            logger.info("Enriched question with session entities: %s", names)
+
+    chunks = _embed_store.search(search_question, top_k=top_k, dynasty_context=dynasty_context)
 
     logger.info("Retrieved %d chunks", len(chunks))
     for i, c in enumerate(chunks, 1):
@@ -161,6 +280,10 @@ def _retrieve(question: str, context_override: Optional[str] = None, top_k: int 
     if dynasty_context:
         context_str = f"## Triều đại đang xem: {dynasty_context}\n\n" + context_str
 
+    history_block = _format_history_block(history)
+    if history_block:
+        context_str = history_block + "\n\n" + context_str
+
     return {
         "clean_question": clean_question,
         "dynasty_context": dynasty_context,
@@ -170,12 +293,12 @@ def _retrieve(question: str, context_override: Optional[str] = None, top_k: int 
     }
 
 
-def query_graph(question: str, top_k: int = 10) -> dict:
+def query_graph(question: str, top_k: int = 10, history: Optional[list[dict]] = None) -> dict:
     """GraphRAG query: vector search → graph expansion → LLM generation."""
     if not _ready:
         raise RuntimeError("GraphRAG not initialised")
 
-    retrieval = _retrieve(question, top_k=top_k)
+    retrieval = _retrieve(question, top_k=top_k, history=history)
     context_str = retrieval["context_str"]
 
     print("\n===== FULL CONTEXT =====\n")
@@ -200,14 +323,14 @@ def query_graph(question: str, top_k: int = 10) -> dict:
     }
 
 
-def query_graph_stream(question: str, top_k: int = 10):
+def query_graph_stream(question: str, top_k: int = 10, history: Optional[list[dict]] = None):
     """Streaming counterpart of query_graph: retrieval happens once up front
     (not streamed), then generation is yielded as it arrives from Groq.
     Yields dicts of {"event": str, "data": dict} for an SSE layer to format."""
     if not _ready:
         raise RuntimeError("GraphRAG not initialised")
 
-    retrieval = _retrieve(question, top_k=top_k)
+    retrieval = _retrieve(question, top_k=top_k, history=history)
     context_str = retrieval["context_str"]
 
     graph_data = retrieval["graph_data"]

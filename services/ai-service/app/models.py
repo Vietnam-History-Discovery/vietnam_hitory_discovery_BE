@@ -7,9 +7,15 @@ from datetime import datetime
 
 # ── Query ──────────────────────────────────────────────────────────────────────
 
+class ConversationTurn(BaseModel):
+    role: str = Field(..., max_length=20)  # "user" | "assistant"
+    content: str = Field(..., max_length=2000)
+
+
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=50000)
     top_k: int = Field(10, ge=1, le=20)
+    history: List[ConversationTurn] = Field(default_factory=list)
 
 
 class QueryResponse(BaseModel):
