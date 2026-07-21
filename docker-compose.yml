@@ -17,12 +17,6 @@ services:
     volumes:
       - ./data:/app/data  # mount data folder cho embeddings cache
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 60s
 
   user-service:
     build: ./services/user-service
@@ -60,14 +54,10 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      user-service:
-        condition: service_started
-      chat-service:
-        condition: service_started
-      ai-service:
-        condition: service_healthy
-      article-service:
-        condition: service_started
+      - user-service
+      - chat-service
+      - ai-service
+      - article-service
     volumes:
       - ./firebase.json:/app/firebase.json:ro
     restart: unless-stopped
@@ -81,7 +71,7 @@ services:
 
   frontend:
     build:
-      context: ../vietnam_history_discovery_FE
+      context: ../vietnam_hitory_discovery_FE
       dockerfile: Dockerfile
       args:
         - VITE_FIREBASE_API_KEY=${VITE_FIREBASE_API_KEY}
