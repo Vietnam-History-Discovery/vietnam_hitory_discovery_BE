@@ -144,32 +144,41 @@ class EmbeddingStore:
             self._driver = None
 
     def build(self, chunks_path: Optional[str] = None):
-        """Embed tất cả chunks, lưu cache."""
-        if chunks_path is None:
-            chunks_path = os.path.join(PARSED_DIR, "dvsktt_chunks.json")
+        """Embed tất cả chunks từ DVSKTT + VNSL, lưu cache."""
 
-        vec_path   = os.path.join(EMBED_DIR, "dvsktt_vectors.npy")
-        chunk_path = os.path.join(EMBED_DIR, "dvsktt_chunks_cache.json")
+        vec_path   = os.path.join(EMBED_DIR, "combined_vectors.npy")
+        chunk_path = os.path.join(EMBED_DIR, "combined_chunks_cache.json")
 
         # Load cache nếu đã có
         if os.path.exists(vec_path) and os.path.exists(chunk_path):
             print("📦 Load embeddings từ cache...")
             self.vectors = np.load(vec_path)
-
             with open(chunk_path, encoding="utf-8") as f:
                 self.chunks = json.load(f)
-
             print(f"   {len(self.chunks)} chunks loaded\n")
             self.bm25_index = BM25Index(self.chunks)
             return
 
-        # Build mới
-        print(f"⚙️  Embedding chunks từ {chunks_path}...")
-        with open(chunks_path, encoding="utf-8") as f:
-            self.chunks = json.load(f)
+        # Load cả 2 file
+        CHUNK_FILES = [
+            os.path.join(PARSED_DIR, "dvsktt_chunks.json"),
+            os.path.join(PARSED_DIR, "vnsl_chunks.json"),
+        ]
+
+        all_chunks = []
+        for path in CHUNK_FILES:
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    chunks = json.load(f)
+                    all_chunks.extend(chunks)
+                    print(f"✅ Loaded {len(chunks)} chunks từ {os.path.basename(path)}")
+            else:
+                print(f"⚠️  Không tìm thấy {path}, bỏ qua")
+
+        self.chunks = all_chunks
+        print(f"\n⚙️  Embedding {len(self.chunks)} chunks tổng cộng...")
 
         texts = [c["text"] for c in self.chunks]
-        print(f"   Encoding {len(texts)} chunks...")
         self.vectors = self.model.encode(
             texts,
             batch_size=32,
@@ -180,24 +189,9 @@ class EmbeddingStore:
         # Lưu cache
         np.save(vec_path, self.vectors)
         with open(chunk_path, "w", encoding="utf-8") as f:
-            json.dump(self.chunks, f, ensure_ascii=False, indent=2)
+            json.dump(self.chunks, f, ensure_ascii=False)
 
         print(f"   {len(self.chunks)} chunks loaded\n")
-
-        # DEBUG
-        print("\n===== HUNG VUONG CHECK =====")
-
-        for chunk in self.chunks:
-            text = chunk.get("text", "").lower()
-
-            if "hùng vương" in text:
-                print(chunk["chunk_id"])
-                print(chunk["title"])
-                print(chunk["text"][:1000])
-                print()
-
-        print("===========================\n")
-
         self.bm25_index = BM25Index(self.chunks)
 
     def search(
@@ -583,19 +577,19 @@ def build_context(
         parts.append("")
 
     # B. Chunks từ vector search
-    parts.append("## Đoạn văn liên quan từ Đại Việt Sử Ký Toàn Thư\n")
+    parts.append("## Đoạn văn liên quan từ tài liệu lịch sử\n") 
     for i, chunk in enumerate(vector_chunks, 1):
         parts.append(f"[{i}] {chunk['title']} (score: {chunk['score']:.2f})")
         parts.append(chunk["text"])
         parts.append("")
 
-    # B. Entities tìm được
+    # C. Entities tìm được
     if graph_data.get("entities"):
         parts.append("## Nhân vật / Địa danh / Sự kiện liên quan\n")
         parts.append(", ".join(graph_data["entities"]))
         parts.append("")
 
-    # C. Quan hệ từ graph
+    # D. Quan hệ từ graph
     if graph_data.get("relations"):
         parts.append("## Quan hệ trong Knowledge Graph\n")
         for r in graph_data["relations"][:15]:
@@ -603,7 +597,7 @@ def build_context(
             parts.append(f"• {r['from']} —[{r['rel']}]→ {r['to']}{weight}")
         parts.append("")
 
-    # D. Chunks bổ sung từ graph traversal
+    # E. Chunks bổ sung từ graph traversal
     if graph_data.get("neighbor_chunks"):
         parts.append("## Đoạn văn bổ sung (từ graph traversal)\n")
         for chunk in graph_data["neighbor_chunks"]:

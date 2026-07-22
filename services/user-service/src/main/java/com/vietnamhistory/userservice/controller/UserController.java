@@ -3,7 +3,6 @@ package com.vietnamhistory.userservice.controller;
 import java.util.List;
 
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -13,13 +12,12 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.server.ResponseStatusException;
 
-import com.google.firebase.auth.FirebaseAuth;
-import com.google.firebase.auth.FirebaseAuthException;
 import com.vietnamhistory.userservice.dto.UpdateUserRequest;
 import com.vietnamhistory.userservice.dto.UserDto;
+import com.vietnamhistory.userservice.entity.Role;
 import com.vietnamhistory.userservice.entity.User;
+import com.vietnamhistory.userservice.entity.UserStatus;
 import com.vietnamhistory.userservice.repository.UserRepository;
 
 import jakarta.validation.Valid;
@@ -60,36 +58,67 @@ public class UserController {
     }
 
     @GetMapping
-    public ResponseEntity<List<UserDto>> listUsers(
-            @RequestHeader(value = "X-User-Role", required = false) String role) {
-        requireAdmin(role);
+    public ResponseEntity<List<UserDto>> listUsers(@RequestHeader("X-User-Id") String requesterId) {
+        if (!isAdmin(requesterId)) {
+            return ResponseEntity.status(403).build();
+        }
         return ResponseEntity.ok(userRepository.findAll().stream().map(this::toDto).toList());
     }
 
+    @PutMapping("/{id}")
+    public ResponseEntity<UserDto> updateUser(@PathVariable String id,
+                                               @Valid @RequestBody UpdateUserRequest request,
+                                               @RequestHeader("X-User-Id") String requesterId) {
+        if (!isAdmin(requesterId)) {
+            return ResponseEntity.status(403).build();
+        }
+        if (id.equals(requesterId) && "INACTIVE".equals(request.status())) {
+            throw new RuntimeException("Admin cannot deactivate their own account");
+        }
+        if ("INACTIVE".equals(request.status())
+                && (request.statusReason() == null || request.statusReason().isBlank())) {
+            throw new RuntimeException("Status reason is required when deactivating a user");
+        }
+
+        User user = userRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        user.setUsername(request.username());
+        if (request.role() != null) {
+            user.setRole(Role.valueOf(request.role()));
+        }
+        if (request.status() != null) {
+            user.setStatus(UserStatus.valueOf(request.status()));
+            user.setStatusReason("INACTIVE".equals(request.status()) ? request.statusReason() : null);
+        }
+
+        return ResponseEntity.ok(toDto(userRepository.save(user)));
+    }
+
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> deleteUser(
-            @PathVariable String id,
-            @RequestHeader(value = "X-User-Role", required = false) String role,
-            @RequestHeader("X-User-Id") String callerUserId) {
-        requireAdmin(role);
-        if (id.equals(callerUserId)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot delete your own account");
+    public ResponseEntity<Void> deleteUser(@PathVariable String id,
+                                            @RequestHeader("X-User-Id") String requesterId) {
+        if (!isAdmin(requesterId)) {
+            return ResponseEntity.status(403).build();
         }
         userRepository.deleteById(id);
-        try {
-            FirebaseAuth.getInstance().deleteUser(id);
-        } catch (FirebaseAuthException e) {
-        }
         return ResponseEntity.noContent().build();
     }
 
-    private void requireAdmin(String role) {
-        if (!"admin".equals(role)) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Admin role required");
-        }
+    private boolean isAdmin(String requesterId) {
+        return userRepository.findById(requesterId)
+                .map(u -> u.getRole() == Role.ADMIN)
+                .orElse(false);
     }
 
     private UserDto toDto(User user) {
-        return new UserDto(user.getId(), user.getUsername(), user.getEmail(), user.getRole().name());
+        return new UserDto(
+                user.getId(),
+                user.getUsername(),
+                user.getEmail(),
+                user.getRole().name(),
+                user.getStatus() != null ? user.getStatus().name() : UserStatus.ACTIVE.name(),
+                user.getStatusReason()
+        );
     }
 }

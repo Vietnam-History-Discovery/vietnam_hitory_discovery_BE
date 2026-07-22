@@ -65,6 +65,26 @@ public class UserRepository {
         return Optional.ofNullable(inMemoryUsers.get(id));
     }
 
+    public List<User> findAll() {
+        List<User> users = new ArrayList<>();
+        try {
+            for (QueryDocumentSnapshot doc : getFirestore().collection("users").get().get().getDocuments()) {
+                users.add(doc.toObject(User.class));
+            }
+        } catch (InterruptedException | ExecutionException e) {
+            Thread.currentThread().interrupt();
+        }
+        return users;
+    }
+
+    public void deleteById(String id) {
+        try {
+            getFirestore().collection("users").document(id).delete().get();
+        } catch (InterruptedException | ExecutionException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     public boolean existsByUsername(String username) {
         try {
             var query = getFirestore().collection("users").whereEqualTo("username", username).get().get();
