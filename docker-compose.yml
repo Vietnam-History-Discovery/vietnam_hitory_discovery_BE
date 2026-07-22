@@ -14,6 +14,9 @@ services:
       - NEO4J_PASSWORD=${NEO4J_PASSWORD}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GROQ_API_KEY=${GROQ_API_KEY}
+      - TIMELINE_MODEL=${TIMELINE_MODEL:-openai/gpt-oss-120b}
+      - TIMELINE_ANSWER_MODEL=${TIMELINE_ANSWER_MODEL:-llama-3.3-70b-versatile}
+
     volumes:
       - ./data:/app/data # mount data folder cho embeddings cache
     restart: unless-stopped

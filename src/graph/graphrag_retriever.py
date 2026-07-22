@@ -670,7 +670,7 @@ Trả lời bằng tiếng Việt, súc tích và chính xác:"""
                 model_to_use = "openai/" + model_to_use[4:]
             return self.openrouter_client, model_to_use
         elif self.groq_client:
-            return self.groq_client, self.groq_model
+            return self.groq_client, model or self.groq_model
         raise RuntimeError("Không có LLM client hoạt động.")
 
     def generate(self, query: str, context: str) -> str:
@@ -820,9 +820,10 @@ Trả lời bằng tiếng Việt, súc tích và chính xác:"""
         except Exception as e:
             print(f"⚠️ Structured generation failed with {model_to_use}: {e}")
             if client == self.openrouter_client and self.groq_client:
+                fallback_model = model or "openai/gpt-oss-120b"
                 print("🔄 Falling back to Groq for structured generation...")
                 response = self.groq_client.chat.completions.create(
-                    model=self.groq_model,
+                    model=fallback_model,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},

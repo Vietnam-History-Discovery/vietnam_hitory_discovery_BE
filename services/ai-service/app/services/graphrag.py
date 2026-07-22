@@ -375,6 +375,10 @@ def query_naive(question: str, top_k: int = 10) -> dict:
 # ── Timeline generation ──────────────────────────────────────────────────────
 
 _TIMELINE_MODEL = os.getenv("TIMELINE_MODEL", "openai/gpt-oss-120b")
+_TIMELINE_ANSWER_MODEL = os.getenv(
+      "TIMELINE_ANSWER_MODEL",
+      "llama-3.3-70b-versatile",
+  )
 _TIMELINE_CONTEXT_CHAR_LIMIT = int(os.getenv("TIMELINE_CONTEXT_CHAR_LIMIT", "4000"))
 
 _TIMELINE_FALLBACK_ANSWER = (
@@ -545,7 +549,8 @@ def query_timeline_stream(
     for delta in _llm.generate_answer_stream(
         system_prompt=_TIMELINE_ANSWER_SYSTEM_PROMPT,
         user_prompt=answer_prompt,
-        model=_TIMELINE_MODEL,
+        model=_TIMELINE_ANSWER_MODEL,
+        max_tokens=512,
     ):
         yield {"event": "delta", "data": {"text": delta}}
 
