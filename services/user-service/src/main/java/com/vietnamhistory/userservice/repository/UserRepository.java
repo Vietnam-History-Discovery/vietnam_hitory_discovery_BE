@@ -19,6 +19,8 @@ public class UserRepository {
 
     private static final Logger log = LoggerFactory.getLogger(UserRepository.class);
 
+    private static final ConcurrentHashMap<String, User> inMemoryUsers = new ConcurrentHashMap<>();
+
     private Firestore getFirestore() {
         return FirestoreClient.getFirestore();
     }
