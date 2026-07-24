@@ -18,6 +18,7 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.vietnamhistory.chatservice.dto.AiQueryRequest;
 import com.vietnamhistory.chatservice.dto.AiQueryResponse;
@@ -27,6 +28,7 @@ import com.vietnamhistory.chatservice.dto.CreateSessionRequest;
 import com.vietnamhistory.chatservice.dto.MessageDto;
 import com.vietnamhistory.chatservice.dto.SessionDto;
 import com.vietnamhistory.chatservice.dto.SessionWithMessagesDto;
+import com.vietnamhistory.chatservice.dto.SourceReferenceDto;
 import com.vietnamhistory.chatservice.dto.TimelineAiRequest;
 import com.vietnamhistory.chatservice.dto.TimelineAiRequest.RecentExchange;
 import com.vietnamhistory.chatservice.dto.TimelineRequest;
@@ -127,13 +129,15 @@ public class ChatService {
         assistantMsg.setSessionId(sessionId);
         assistantMsg.setRole(MessageRole.ASSISTANT);
         assistantMsg.setContent(aiResponse.answer());
+        assistantMsg.setSources(aiResponse.sources());
         assistantMsg.setSequence(nextSequence + 1);
         messageRepository.save(assistantMsg);
 
         session.setUpdatedAt(LocalDateTime.now().toString());
         sessionRepository.save(session);
 
-        return new AskResponse(aiResponse.answer(), aiResponse.chunksUsed(), aiResponse.entities(), aiResponse.graphNodes());
+        return new AskResponse(aiResponse.answer(), aiResponse.chunksUsed(), aiResponse.entities(),
+                aiResponse.graphNodes(), aiResponse.sources());
     }
 
     public SseEmitter askStream(String userId, String sessionId, AskRequest request) {
@@ -166,6 +170,7 @@ public class ChatService {
                     assistantMsg.setSessionId(sessionId);
                     assistantMsg.setRole(MessageRole.ASSISTANT);
                     assistantMsg.setContent(accumulatedAnswer);
+                    assistantMsg.setSources(parseSources(capturedEvents.get("meta")));
                     assistantMsg.setSequence(nextSequence + 1);
                     messageRepository.save(assistantMsg);
 
@@ -282,6 +287,7 @@ public class ChatService {
                     assistantMsg.setContent(content);
                     assistantMsg.setMessageType(MessageType.TIMELINE);
                     assistantMsg.setTimeline(timelineJson);
+                    assistantMsg.setSources(parseSources(capturedEvents.get("meta")));
                     assistantMsg.setSequence(nextSequence + 1);
                     messageRepository.save(assistantMsg);
 
@@ -351,6 +357,22 @@ public class ChatService {
                 s.getSessionType(), s.getCreatedAt(), s.getUpdatedAt());
     }
 
+    private List<SourceReferenceDto> parseSources(String metaJson) {
+        if (metaJson == null || metaJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            var sourcesNode = objectMapper.readTree(metaJson).path("sources");
+            if (!sourcesNode.isArray()) {
+                return List.of();
+            }
+            return objectMapper.convertValue(sourcesNode, new TypeReference<List<SourceReferenceDto>>() {});
+        } catch (Exception e) {
+            log.warn("Failed to parse source metadata: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
     private MessageDto toMessageDto(ChatMessage m) {
         TimelineSnapshotDto timelineDto = null;
         if (m.getTimeline() != null) {
@@ -361,6 +383,6 @@ public class ChatService {
             }
         }
         return new MessageDto(m.getId(), m.getSessionId(), m.getRole(), m.getContent(),
-                m.getMessageType(), timelineDto, m.getCreatedAt(), m.getSequence());
+                m.getMessageType(), timelineDto, m.getCreatedAt(), m.getSequence(), m.getSources());
     }
 }

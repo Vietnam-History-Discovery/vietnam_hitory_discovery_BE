@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Optional
 
 from pydantic import ValidationError
 
+from .sources import source_references
+
 if TYPE_CHECKING:
     from app.models import TimelineSnapshot
 
@@ -91,7 +93,6 @@ _HISTORY_MAX_EXCHANGES = 3
 _HISTORY_CONTENT_MAX_CHARS = 200
 _HISTORY_MAX_ENTITIES = 3
 _HISTORY_TAIL_WINDOW_SIZES = (4, 3, 2)
-
 
 def _entities_from_history(history: list[dict]) -> list[dict]:
     """Extract Neo4j-verified entities from recent conversation turns.
@@ -320,6 +321,7 @@ def query_graph(question: str, top_k: int = 10, history: Optional[list[dict]] = 
         "chunks_used": len(retrieval["chunks"]),
         "entities": entities if isinstance(entities, list) else list(entities),
         "graph_nodes": graph_nodes,
+        "sources": source_references(retrieval["chunks"]),
     }
 
 
@@ -347,6 +349,7 @@ def query_graph_stream(question: str, top_k: int = 10, history: Optional[list[di
             "chunks_used": len(retrieval["chunks"]),
             "entities": entities if isinstance(entities, list) else list(entities),
             "graph_nodes": graph_nodes,
+            "sources": source_references(retrieval["chunks"]),
         },
     }
 
@@ -487,6 +490,7 @@ def query_timeline_stream(
             "chunks_used": len(chunks),
             "entities": entities if isinstance(entities, list) else list(entities),
             "graph_nodes": graph_nodes_val,
+            "sources": source_references(chunks),
         },
     }
 

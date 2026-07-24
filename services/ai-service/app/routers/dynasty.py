@@ -15,6 +15,7 @@ from app.models import (
     DynastyListItem,
     DynastyListResponse,
 )
+from app.services.sources import source_references
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,7 @@ async def get_dynasty(name: str) -> DynastyDetail:
             asyncio.to_thread(
                 _run,
                 "MATCH (c:Chunk)-[:BELONGS_TO_DYNASTY]->(d:Dynasty {name: $name}) "
-                "RETURN c.title AS title, c.text AS text "
+                "RETURN c.title AS title, c.text AS text, c.source AS source, c.url AS url "
                 "ORDER BY c.chunk_id LIMIT 10",
                 name=name,
             ),
@@ -172,9 +173,15 @@ async def get_dynasty(name: str) -> DynastyDetail:
         events=filtered_events,
         places=filtered_places,
         sample_chunks=[
-            ChunkPreview(title=r.get("title", ""), text=r.get("text", ""))
+            ChunkPreview(
+                title=r.get("title", ""),
+                text=r.get("text", ""),
+                source=r.get("source"),
+                url=r.get("url"),
+            )
             for r in chunks
         ],
+        sources=source_references(chunks),
     )
 
 

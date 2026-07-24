@@ -7,7 +7,7 @@ services:
       context: .
       dockerfile: services/ai-service/Dockerfile
     ports:
-      - "8001:8001"
+      - "${AI_SERVICE_PORT:-8001}:8001"
     environment:
       - NEO4J_URI=${NEO4J_URI}
       - NEO4J_USER=${NEO4J_USER}
@@ -24,7 +24,7 @@ services:
   user-service:
     build: ./services/user-service
     ports:
-      - "8081:8081"
+      - "${USER_SERVICE_PORT:-8081}:8081"
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
     volumes:
@@ -34,7 +34,7 @@ services:
   chat-service:
     build: ./services/chat-service
     ports:
-      - "8082:8082"
+      - "${CHAT_SERVICE_PORT:-8082}:8082"
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
       - AI_SERVICE_URL=${AI_SERVICE_URL}
@@ -45,7 +45,7 @@ services:
   article-service:
     build: ./services/article-service
     ports:
-      - "8083:8083"
+      - "${ARTICLE_SERVICE_PORT:-8083}:8083"
     environment:
       - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
     volumes:
@@ -55,7 +55,7 @@ services:
   api-gateway:
     build: ./services/api-gateway
     ports:
-      - "8080:8080"
+      - "${API_GATEWAY_PORT:-8080}:8080"
     depends_on:
       - user-service
       - chat-service

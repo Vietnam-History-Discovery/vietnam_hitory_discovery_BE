@@ -18,11 +18,17 @@ class QueryRequest(BaseModel):
     history: List[ConversationTurn] = Field(default_factory=list)
 
 
+class SourceReference(BaseModel):
+    document: str
+    url: Optional[str] = None
+
+
 class QueryResponse(BaseModel):
     answer: str
     chunks_used: int
     entities: List[str]
     graph_nodes: int
+    sources: List[SourceReference] = Field(default_factory=list)
 
 
 class NaiveQueryResponse(BaseModel):
@@ -99,6 +105,8 @@ class DynastyListItem(BaseModel):
 class ChunkPreview(BaseModel):
     title: str
     text: str
+    source: Optional[str] = None
+    url: Optional[str] = None
 
 
 class DynastyDetail(BaseModel):
@@ -108,6 +116,7 @@ class DynastyDetail(BaseModel):
     events: List[str]
     places: List[str]
     sample_chunks: List[ChunkPreview]
+    sources: List[SourceReference] = Field(default_factory=list)
 
 
 class DynastyChatContext(BaseModel):
