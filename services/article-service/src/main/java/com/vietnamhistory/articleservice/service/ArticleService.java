@@ -1,5 +1,6 @@
 package com.vietnamhistory.articleservice.service;
 
+import com.vietnamhistory.articleservice.dto.ArticleChatContextDto;
 import com.vietnamhistory.articleservice.dto.ArticleDetailDto;
 import com.vietnamhistory.articleservice.dto.ArticleListResponse;
 import com.vietnamhistory.articleservice.dto.ArticleSectionDto;
@@ -27,6 +28,10 @@ public class ArticleService {
     private static final List<String> ERA_ORDER = List.of(
             "mo-dau", "thuong-co", "bac-thuoc", "tu-chu", "tu-chu-nam-bac", "can-kim"
     );
+
+    private static final int CHAT_CONTEXT_CONTENT_CHARS = 800;
+    private static final int CHAT_CONTEXT_SECTION_CHARS = 250;
+    private static final int CHAT_CONTEXT_MAX_SECTIONS = 3;
 
     @Autowired
     private ArticleRepository articleRepository;
@@ -77,6 +82,46 @@ public class ArticleService {
 
     public ArticleDetailDto getBySlug(String slug) {
         return toDetail(findBySlugOrThrow(slug));
+    }
+
+    /**
+     * Rich, article-specific context string for the chat AI — mirrors the Dynasty
+     * chat-context endpoint so RAG retrieval is grounded in the actual article
+     * being read instead of a coarse era label (see ChatService.askStream, which
+     * wraps this in "[" + context + "]" before the question).
+     */
+    public ArticleChatContextDto getChatContext(String slug) {
+        Article a = findBySlugOrThrow(slug);
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("=== Bài viết: ").append(a.getChapterTitle()).append(" ===\n");
+        if (a.getEra() != null && !a.getEra().isBlank()) {
+            sb.append("Thời kỳ: ").append(a.getEra()).append("\n");
+        }
+        if (a.getTags() != null && !a.getTags().isEmpty()) {
+            sb.append("Chủ đề: ").append(String.join(", ", a.getTags())).append("\n");
+        }
+        sb.append("\nNội dung:\n");
+
+        List<ArticleSection> sections = a.getSections();
+        if (sections != null && !sections.isEmpty()) {
+            sections.stream().limit(CHAT_CONTEXT_MAX_SECTIONS).forEach(s ->
+                    sb.append(s.getSectionTitle()).append(": ")
+                            .append(truncate(s.getContent(), CHAT_CONTEXT_SECTION_CHARS)).append("\n"));
+        } else {
+            sb.append(truncate(a.getContent(), CHAT_CONTEXT_CONTENT_CHARS)).append("\n");
+        }
+
+        // Strip "]" so the "[" + context + "]" wrapper downstream can't be truncated early.
+        String context = sb.toString().replace("]", ")");
+        return new ArticleChatContextDto(slug, context);
+    }
+
+    private static String truncate(String text, int maxChars) {
+        if (text == null) return "";
+        String trimmed = text.strip();
+        if (trimmed.length() <= maxChars) return trimmed;
+        return trimmed.substring(0, maxChars) + "…";
     }
 
     public List<ArticleSummaryDto> listByEra(String eraSlug) {

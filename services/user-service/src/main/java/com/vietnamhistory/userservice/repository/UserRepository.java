@@ -1,18 +1,19 @@
 package com.vietnamhistory.userservice.repository;
 
-import com.google.cloud.firestore.Firestore;
-import com.google.cloud.firestore.QueryDocumentSnapshot;
-import com.google.firebase.cloud.FirestoreClient;
-import com.vietnamhistory.userservice.entity.User;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Repository;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Repository;
+
+import com.google.cloud.firestore.Firestore;
+import com.google.cloud.firestore.QueryDocumentSnapshot;
+import com.google.firebase.cloud.FirestoreClient;
+import com.vietnamhistory.userservice.entity.User;
 
 @Repository
 public class UserRepository {
@@ -63,26 +64,6 @@ public class UserRepository {
             // fallback
         }
         return Optional.ofNullable(inMemoryUsers.get(id));
-    }
-
-    public List<User> findAll() {
-        List<User> users = new ArrayList<>();
-        try {
-            for (QueryDocumentSnapshot doc : getFirestore().collection("users").get().get().getDocuments()) {
-                users.add(doc.toObject(User.class));
-            }
-        } catch (InterruptedException | ExecutionException e) {
-            Thread.currentThread().interrupt();
-        }
-        return users;
-    }
-
-    public void deleteById(String id) {
-        try {
-            getFirestore().collection("users").document(id).delete().get();
-        } catch (InterruptedException | ExecutionException e) {
-            Thread.currentThread().interrupt();
-        }
     }
 
     public boolean existsByUsername(String username) {

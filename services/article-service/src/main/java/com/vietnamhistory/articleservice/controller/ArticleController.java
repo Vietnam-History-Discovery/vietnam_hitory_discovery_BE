@@ -1,5 +1,6 @@
 package com.vietnamhistory.articleservice.controller;
 
+import com.vietnamhistory.articleservice.dto.ArticleChatContextDto;
 import com.vietnamhistory.articleservice.dto.ArticleDetailDto;
 import com.vietnamhistory.articleservice.dto.ArticleListResponse;
 import com.vietnamhistory.articleservice.dto.ArticleSummaryDto;
@@ -44,6 +45,11 @@ public class ArticleController {
     @GetMapping("/{slug}")
     public ResponseEntity<ArticleDetailDto> getBySlug(@PathVariable String slug) {
         return ResponseEntity.ok(articleService.getBySlug(slug));
+    }
+
+    @GetMapping("/{slug}/chat-context")
+    public ResponseEntity<ArticleChatContextDto> getChatContext(@PathVariable String slug) {
+        return ResponseEntity.ok(articleService.getChatContext(slug));
     }
 
     @PostMapping
